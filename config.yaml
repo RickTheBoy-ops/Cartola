@@ -1,0 +1,46 @@
+# Configurações do Sistema Cartola
+
+api:
+  base_url: "https://api.cartolafc.globo.com"
+  timeout: 30
+  max_retries: 5
+  rate_limit_delay: 1.0
+
+database:
+  path: "data/cartola.db"
+  backup_enabled: true
+
+ml:
+  model_type: "rf"  # 'rf' ou 'gb'
+  train_window: 15  # rodadas para treino
+  validation_split: 0.2
+  
+predictor:
+  rf:
+    n_estimators: 200
+    max_depth: 15
+    min_samples_split: 10
+  gb:
+    n_estimators: 150
+    learning_rate: 0.1
+    max_depth: 5
+
+optimizer:
+  population_size: 150
+  generations: 100
+  mutation_rate: 0.15
+  elite_size: 15
+  
+  formacoes_disponiveis:
+    - "3-4-3"
+    - "3-5-2"
+    - "4-3-3"
+    - "4-4-2"
+    - "4-5-1"
+    - "5-3-2"
+    - "5-4-1"
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/cartola.log"
