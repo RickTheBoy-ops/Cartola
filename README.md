@@ -1,82 +1,97 @@
-# 🏆 Cartola FC - Ultimate Optimizer (AI-Powered)
+<div align="center">
+  <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python Badge"/>
+  <img src="https://img.shields.io/badge/Machine_Learning-F7931E?style=for-the-badge&logo=scikit-learn&logoColor=white" alt="ML Badge"/>
+  <img src="https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite Badge"/>
+</div>
 
-Sistema profissional de análise, predição e otimização para Cartola FC utilizando Machine Learning e Algoritmos Genéticos.
+<h1 align="center">🏆 Cartola FC - Ultimate Optimizer (AI-Powered)</h1>
+
+<p align="center">
+  <em>Sistema profissional de análise, predição e otimização para Cartola FC utilizando Machine Learning e Algoritmos Genéticos.</em>
+</p>
+
+<hr>
+
+## 🚀 Sobre o Projeto
+
+O **Cartola FC - Ultimate Optimizer** é uma ferramenta definitiva para quem deseja mitar no Cartola FC usando ciência de dados. Integrado com **Machine Learning** avançado e **Otimização Genética**, ele não apenas sugere jogadores baseados no histórico, mas estima pontuações futuras e encontra a escalação matematicamente ideal para maximizar seus pontos respeitando seu patrimônio em cartoletas.
 
 ---
 
-## 📁 Estrutura do Projeto
+## ✨ Funcionalidades Principais
 
-```
+| Recurso | Descrição |
+| :--- | :--- |
+| **📡 Coleta Resiliente** | Cliente de API com retry automático e rate limiting para extração dos scouts oficiais sem bloqueios. |
+| **💾 Persistência Inteligente**| Banco SQLite local ultrarrápido mantendo o histórico de todos os scouts para análises longas. |
+| **🤖 Predição Científica** | Utilizando Random Forest e Gradient Boosting treinado com validação temporal da performance. |
+| **🧬 Otimização Genética** | Algoritmo que gera milhões de cruzamentos para achar a equipe ideal (formação tática x precificação). |
+| **📊 Feature Engineering** | Cálculos de médias móveis, tendências de momento, e força do adversário integradas. |
+
+---
+
+## 📁 Estrutura do Repositório
+
+```text
 cartola/
 ├── src/
-│   ├── api/
-│   │   └── client.py              # Cliente HTTP robusto com Retry e Rate Limiting
-│   ├── data/
-│   │   └── collector.py           # ETL e persistência em SQLite
-│   ├── ml/
-│   │   ├── features.py            # Feature Engineering avançado
-│   │   ├── predictor.py           # Modelos de ML (Random Forest/GB)
-│   │   └── optimizer.py           # Otimizador Genético de escalação
-│   └── analysis/                  # Análises estatísticas complementares
+│   ├── api/          # 🌐 Cliente HTTP robusto
+│   ├── data/         # 🗄️ Pipeline ETL e persistência (SQLite)
+│   ├── ml/           # 🧠 Modelos ML e Feature Engineering avançado
+│   └── analysis/     # 📈 Análises estatísticas complementares
 ├── data/
-│   ├── raw/                       # Dados brutos
-│   ├── processed/                 # Resultados processados
-│   └── models/                    # Modelos treinados salvos
-├── main.py                        # Orquestrador principal do sistema
-├── config.yaml                    # Configurações globais
-└── requirements.txt               # Dependências do projeto
+│   ├── raw/          # Dados originais não tratados
+│   ├── processed/    # Dados finais formatados
+│   └── models/       # Modelos salvos (arquivos picke)
+├── main.py           # 🎯 Orquestrador unificado
+├── config.yaml       # ⚙️ Configurações globais e táticas
+└── requirements.txt  # 📦 Dependências do ambiente
 ```
 
 ---
 
-## 🚀 Funcionalidades
+## 🛠️ Guia de Instalação e Uso
 
-1. **📡 Coleta Resiliente**: Cliente API com retry automático e controle de taxa para evitar bloqueios.
-2. **💾 Persistência Inteligente**: Banco de dados SQLite local para histórico completo de scouts.
-3. **🤖 Predição Científica**: Modelos de Machine Learning treinados com validação temporal para estimar pontuações.
-4. **🧬 Otimização Genética**: Algoritmo que encontra a escalação ideal respeitando formação tática e patrimônio.
-5. **📊 Feature Engineering**: Médias móveis, tendências de momento e força de adversário integradas.
+### 1️⃣ Pré-requisitos
+Certifique-se de ter o Python instalado. Clone este repositório e baixe as dependências:
+```bash
+git clone https://github.com/RickTheBoy-ops/Cartola.git
+cd Cartola
+pip install -r requirements.txt
+```
 
----
+### 2️⃣ Configuração do Ambiente (.env)
+Você precisará de um arquivo `.env` contendo suas variáveis e estratégia inicial. Crie com base no `.env.example`:
 
-## 🛠️ Instalação e Uso
+```env
+CARTOLA_EMAIL=seu@email.com
+CARTOLA_PASSWORD=sua_senha
+CARTOLA_PATRIMONIO=100.0
+CARTOLA_FORMACAO=4-3-3
+```
 
-1. **Instalar dependências**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### 3️⃣ Configuração Fina (config.yaml)
+Se preferir, ajuste o algoritmo pelo arquivo `config.yaml`:
+- **Modelos**: Escolha entre `Random Forest` ou `Gradient Boosting`.
+- **Otimizador Genético**: Configure número de gerações, taxa de mutação e população.
 
-2. **Configurar credenciais**:
-   Crie um arquivo `.env` na raiz baseado no `.env.example`:
-   ```env
-   CARTOLA_EMAIL=seu@email.com
-   CARTOLA_PASSWORD=sua_senha
-   CARTOLA_PATRIMONIO=100.0
-   CARTOLA_FORMACAO=4-3-3
-   ```
-
-3. **Executar o sistema**:
-   ```bash
-   python main.py
-   ```
-
----
-
-## 📊 Configurações
-
-Ajuste os parâmetros de ML e Otimização diretamente no arquivo `config.yaml`.
-
-- **Modelos**: Random Forest (padrão) ou Gradient Boosting.
-- **Otimizador**: Tamanho da população, taxa de mutação e gerações configuráveis.
+### 4️⃣ Executando
+Para rodar nosso orquestrador completo (coleta -> feature eng -> treino -> escalação heurística):
+```bash
+python main.py
+```
 
 ---
 
-## 💡 Próximos Passos
-
-- Integração com IA Perplexity para análise de notícias de última hora.
-- Dashboard interativo via Streamlit.
-- Backtesting de rodadas passadas.
+## 💡 Próximos Passos do RoadMap
+- [ ] 🤖 Integração com IA Perplexity (análise de notícias de última hora)
+- [ ] 📊 Dashboard Interativo (Streamlit) para visualização do time
+- [ ] 🕰️ Backtesting Automático simulando ganhos em rodadas anteriores
 
 ---
 
-**Bora mitar no Cartola com ciência de dados! 🏆⚽📊**
+<div align="center">
+  <b>Bora mitar no Cartola com ciência de dados! 🏆⚽📊</b>
+  <br>
+  <sub>Sinta-se livre para contribuir, avaliar e dar uma ⭐ no projeto.</sub>
+</div>

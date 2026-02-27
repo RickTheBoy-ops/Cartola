@@ -8,3 +8,4 @@ data/*.db
 logs/
 data/models/*.pkl
 data/processed/*.csv
+output*.txt
