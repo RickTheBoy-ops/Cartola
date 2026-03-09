@@ -39,8 +39,8 @@ class CartolaAPIClient:
         password: Optional[str] = None,
         config_path: str = "config.yaml"
     ):
-        # Carregar configurações
-        with open(config_path, 'r') as f:
+        # Carregar configurações com encoding UTF-8 para evitar erros no Windows
+        with open(config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
 
         api_config = self.config.get('api', {})
