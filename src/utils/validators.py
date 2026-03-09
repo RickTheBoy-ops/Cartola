@@ -25,8 +25,8 @@ STATUS_VALIDOS = {7}  # Apenas "Provável"
 # Posições válidas
 POSICOES_VALIDAS = {1, 2, 3, 4, 5, 6}
 
-# Campos obrigatórios para um atleta
-CAMPOS_OBRIGATORIOS_ATLETA = ['atleta_id', 'posicao_id', 'preco']
+# Campos obrigatórios para um atleta (na raw API response)
+CAMPOS_OBRIGATORIOS_ATLETA = ['atleta_id', 'posicao_id']
 
 
 def validar_mercado(status_data: Dict) -> Dict:
@@ -79,7 +79,27 @@ def filtrar_atletas_validos(atletas_df: pd.DataFrame) -> pd.DataFrame:
     - Atletas com posição inválida
     - Atletas com status inativo (lesionados, suspensos, etc.)
     """
+    if len(atletas_df) == 0:
+        return atletas_df.copy()
+
     df = atletas_df.copy()
+    
+    # 1. Normalizar nomes das colunas da API se necessário
+    col_mapping = {}
+    if 'preco_num' in df.columns and 'preco' not in df.columns:
+        col_mapping['preco_num'] = 'preco'
+    if 'media_num' in df.columns and 'media' not in df.columns:
+        col_mapping['media_num'] = 'media'
+    if 'variacao_num' in df.columns and 'variacao' not in df.columns:
+        col_mapping['variacao_num'] = 'variacao'
+        
+    if col_mapping:
+        df = df.rename(columns=col_mapping)
+
+    # Abortar se preco ainda no existir
+    if 'preco' not in df.columns:
+        return df
+
     tam_original = len(df)
 
     # Filtrar por preço positivo

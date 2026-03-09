@@ -23,7 +23,7 @@ class CartolaDataCollector:
         self.api = api_client
 
         # Carregar configurações
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
 
         db_path = self.config.get('database', {}).get('path', "data/cartola.db")
@@ -48,6 +48,12 @@ class CartolaDataCollector:
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        
+        # Adicionar coluna status_id caso a tabela já exista sem ela originariamente
+        try:
+            cursor.execute("ALTER TABLE atletas ADD COLUMN status_id INTEGER DEFAULT 7")
+        except sqlite3.OperationalError:
+            pass # Coluna já existe
 
         # Tabela de Pontuações por Rodada
         cursor.execute("""
