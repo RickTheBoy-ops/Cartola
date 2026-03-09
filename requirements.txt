@@ -21,3 +21,6 @@ pytz>=2023.3
 # Logging e Config
 pyyaml>=6.0
 python-dotenv>=1.0.0
+
+# Dashboard Web
+streamlit>=1.32.0
