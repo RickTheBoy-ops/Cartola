@@ -186,8 +186,9 @@ def check_opponent_conflict(selected_players: List, new_player: pd.Series) -> bo
             new_is_attacker = new_pos in [4, 5]
             player_is_attacker = player_pos in [4, 5]
             
-            if (new_is_defender and player_is_attacker) or (new_is_attacker and player_is_defender):
+            if (new_is_denfender and player_is_attacker) or (new_is_attacker and player_is_defender):
                 return True
+        
     
     return False
 

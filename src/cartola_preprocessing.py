@@ -361,7 +361,7 @@ def main():
     if len(df_multi) > 0:
         print(f"\nTotal de linhas: {len(df_multi)}")
         print(f"Anos únicos: {df_multi['year'].unique()}")
-        print(f"Rodadas únicas: {sorted(df_multi['round'].unique())}")
+        print(f"Rodadas ún  icas: {sorted(df_multi['round'].unique())}")
     
     print("\n" + "="*80 + "\n")
 
