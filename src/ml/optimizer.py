@@ -288,9 +288,9 @@ class GeneticTeamOptimizer:
         
         df['posicao_nome'] = df['posicao_id'].map(POSICOES)
         
-        df = df[['apelido', 'posicao_nome', 'clube_id', 'preco', 'predicao', 'media']].sort_values(
-            ['posicao_id', 'predicao'], ascending=[True, False]
-        )
+        # Sort first, then slice
+        df = df.sort_values(['posicao_id', 'predicao'], ascending=[True, False])
+        df = df[['apelido', 'posicao_nome', 'clube_id', 'preco', 'predicao', 'media']]
         
         df.columns = ['Atleta', 'Posição', 'Clube', 'Preço (C$)', 'Predição', 'Média']
         

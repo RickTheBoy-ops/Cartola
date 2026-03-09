@@ -138,7 +138,7 @@ class CartolaDataCollector:
                 status.get('status_mercado'),
                 status.get('nome_status'),
                 status.get('times_escalados'),
-                status.get('fechamento')
+                status.get('fechamento', {}).get('timestamp') if isinstance(status.get('fechamento'), dict) else status.get('fechamento')
             ))
             
             conn.commit()
@@ -279,8 +279,8 @@ class CartolaDataCollector:
                     partida.get('clube_visitante_id'),
                     partida.get('placar_oficial_mandante'),
                     partida.get('placar_oficial_visitante'),
-                    partida.get('aproveitamento_mandante'),
-                    partida.get('aproveitamento_visitante'),
+                    sum(3 if r.lower()=='v' else 1 if r.lower()=='e' else 0 for r in partida.get('aproveitamento_mandante', [])) / (len(partida.get('aproveitamento_mandante', []))*3 or 1) if isinstance(partida.get('aproveitamento_mandante'), list) else float(partida.get('aproveitamento_mandante') or 0.0),
+                    sum(3 if r.lower()=='v' else 1 if r.lower()=='e' else 0 for r in partida.get('aproveitamento_visitante', [])) / (len(partida.get('aproveitamento_visitante', []))*3 or 1) if isinstance(partida.get('aproveitamento_visitante'), list) else float(partida.get('aproveitamento_visitante') or 0.0),
                     partida.get('valid')
                 ))
             

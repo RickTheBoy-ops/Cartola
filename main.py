@@ -187,7 +187,8 @@ def main():
         team_df.to_csv(output_path, index=False)
         logger.info(f"Time salvo em: {output_path}")
     except Exception as e:
-        logger.error(f"Erro na otimização: {e}")
+        import traceback
+        logger.error(f"Erro na otimização: {e}\n{traceback.format_exc()}")
     
     logger.info("\n✅ Execução concluída!")
 
