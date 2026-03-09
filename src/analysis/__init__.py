@@ -1,1 +1,5 @@
-# Módulo de análise estatística
+"""Módulos de análise exploratória."""
+
+from .exploratory import AnalisadorExploratorio
+
+__all__ = ['AnalisadorExploratorio']
