@@ -15,7 +15,8 @@ import pandas as pd
 
 from .base import OptimizerStrategy
 from .mega_strategy import MegaStrategy
-
+from .genetic_strategy import GeneticStrategy
+from .ensemble_strategy import EnsembleStrategy
 
 class CartolaOptimizer:
     """
@@ -29,9 +30,8 @@ class CartolaOptimizer:
     # Registro de estratégias disponíveis
     STRATEGIES = {
         'mega': MegaStrategy,
-        # Futuras estratégias:
-        # 'genetic': GeneticStrategy,
-        # 'ensemble': EnsembleStrategy,
+        'genetic': GeneticStrategy,
+        'ensemble': EnsembleStrategy,
     }
     
     def __init__(self, strategy: str = 'mega', config: Optional[Dict] = None):

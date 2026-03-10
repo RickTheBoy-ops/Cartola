@@ -210,7 +210,15 @@ with st.sidebar:
     model_key = model_type.split(' ')[0]
 
     st.markdown("<hr style='border-color:#30363d; margin:16px 0;'>", unsafe_allow_html=True)
-    st.markdown("##### 🧬 Otimizador Genético")
+    st.markdown("##### 🧬 Otimizador")
+
+    selected_strategy = st.selectbox(
+        "🛠️ Estratégia de Otimização",
+        ['mega', 'genetic', 'ensemble'],
+        index=1
+    )
+
+    st.markdown("##### ⚙️ Parâmetros (Genético)")
 
     cfg = carregar_config()
     opt_cfg = cfg.get('optimizer', {})
@@ -466,8 +474,8 @@ with tab_analise:
                 log(f"Predições geradas para {len(predicoes_df)} atletas", "ok")
                 progress.progress(82, "🧬 Otimizando time genético...")
 
-                # ── 7. Otimizador ──────────────────────────────
-                from src.ml.optimizer import GeneticTeamOptimizer
+                # ── 7. Otimizador Factory ──────────────────────────────
+                from src.optimizer.factory import CartolaOptimizer
 
                 predicoes_opt = predicoes_df.copy()
                 if 'predicao_std' not in predicoes_opt.columns:
@@ -475,22 +483,49 @@ with tab_analise:
                 score_col = 'predicao_ajustada' if 'predicao_ajustada' in predicoes_opt.columns else 'predicao'
                 predicoes_opt['predicao'] = predicoes_opt[score_col]
 
-                optimizer = GeneticTeamOptimizer(
-                    atletas_df=atletas_df,
-                    predicoes=predicoes_opt,
-                    patrimonio=PATRIMONIO,
-                    formacao=FORMACAO,
-                    population_size=population_size,
-                    generations=generations,
-                    mutation_rate=mutation_rate,
-                    elite_size=max(10, generations // 8),
-                    max_mesmo_clube=max_mesmo_clube,
-                    penalidade_variancia=True,
-                )
+                # Juntar para o formato que a factory e outras strategies esperam
+                df_for_opt = atletas_df.merge(predicoes_opt[['atleta_id', 'predicao', 'predicao_std']], on='atleta_id', how='left')
+                df_for_opt['mega_score'] = df_for_opt['predicao']
 
-                best_team, stats = optimizer.optimize()
-                team_df = optimizer.format_team_output(best_team)
-                log(f"Time otimizado: {stats['total_pontos_preditos']:.1f} pts | C$ {stats['total_preco']:.1f}", "ok")
+                opt_config = {
+                    'population_size': population_size,
+                    'generations': generations,
+                    'mutation_rate': mutation_rate,
+                    'max_mesmo_clube': max_mesmo_clube,
+                    'test_all_formations': False,
+                    'strategies': ['mega', 'genetic']
+                }
+
+                optimizer = CartolaOptimizer(strategy=selected_strategy, config=opt_config)
+                lineup = optimizer.optimize(df_for_opt, PATRIMONIO, FORMACAO)
+
+                if lineup is None or len(lineup) < 12:
+                     raise Exception(f"Não foi possível gerar time viável com a estratégia '{selected_strategy}'. Tente relaxar os filtros.")
+
+                best_team = lineup.to_dict('records')
+                
+                val_score = float(lineup['predicao'].sum()) if 'predicao' in lineup.columns else float(lineup['mega_score'].sum())
+                val_preco = float(lineup['preco'].sum())
+                
+                stats = {
+                    'total_pontos_preditos': val_score,
+                    'total_preco': val_preco,
+                    'patrimonio_usado': (val_preco / PATRIMONIO) * 100 if PATRIMONIO > 0 else 0,
+                }
+
+                # Formatar
+                from src.ml.optimizer import POSICOES
+                display_df = lineup.copy()
+                if 'posicao_nome' not in display_df.columns:
+                    display_df['posicao_nome'] = display_df['posicao_id'].map(POSICOES)
+                
+                cols_to_show = []
+                for c in ['apelido', 'posicao_nome', 'clube_id', 'preco', 'predicao', 'media']:
+                    if c in display_df.columns:
+                        cols_to_show.append(c)
+                team_df = display_df[cols_to_show]
+
+                log(f"Time otimizado ({selected_strategy}): {stats['total_pontos_preditos']:.1f} pts | C$ {stats['total_preco']:.1f}", "ok")
 
                 # Salvar CSV
                 out = ROOT_DIR / "data" / "processed"
