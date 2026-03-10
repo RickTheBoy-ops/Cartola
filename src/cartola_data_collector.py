@@ -23,6 +23,8 @@ import requests
 import json
 from typing import Optional, Dict
 
+from src.utils.exceptions import APIConnectionError, DataValidationError
+
 
 # ========================================================================
 # CONFIGURAÇÃO
@@ -86,11 +88,11 @@ def download_current_data() -> Optional[Dict]:
         }
     
     except requests.RequestException as e:
-        print(f"   ❌ Erro ao baixar dados: {e}")
-        return None
+        print(f"   ❌ Erro de conexão com a API: {e}")
+        raise APIConnectionError(f"Falha na API: {e}")
     except Exception as e:
-        print(f"   ❌ Erro inesperado: {e}")
-        return None
+        print(f"   ❌ Erro inesperado ao baixar dados: {e}")
+        raise APIConnectionError(f"Erro inesperado: {e}")
 
 
 def process_data_to_dataframe(data: Dict) -> Optional[pd.DataFrame]:
@@ -156,9 +158,12 @@ def process_data_to_dataframe(data: Dict) -> Optional[pd.DataFrame]:
         
         return df_merge
     
+    except KeyError as e:
+        print(f"   ❌ Chave ausente nos dados: {e}")
+        raise DataValidationError(f"Dados mal estruturados da API. Faltando chave: {e}")
     except Exception as e:
-        print(f"   ❌ Erro ao processar dados: {e}")
-        return None
+        print(f"   ❌ Erro ao processar dados esportivos: {e}")
+        raise DataValidationError(f"Erro no processamento esportivo: {e}")
 
 
 def get_round_info(df: pd.DataFrame) -> tuple:
@@ -256,12 +261,24 @@ def download_and_save_current_round(save_json_backup: bool = True) -> Optional[s
     print("="*80)
     
     # Download
-    data = download_current_data()
+    data = None
+    try:
+        data = download_current_data()
+    except APIConnectionError as e:
+        print(f"⚠️ Operação abortada devido a erro de conexão: {e}")
+        return None
+        
     if not data:
         return None
     
     # Processar
-    df = process_data_to_dataframe(data)
+    df = None
+    try:
+        df = process_data_to_dataframe(data)
+    except DataValidationError as e:
+        print(f"⚠️ Operação abortada devido a erro de validação: {e}")
+        return None
+        
     if df is None:
         return None
     

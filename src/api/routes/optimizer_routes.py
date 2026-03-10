@@ -1,27 +1,15 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 from typing import Optional, Dict
 
 # Assumindo que a factory e dados mock/raw possam ser passados ou carregados
 from src.optimizer.factory import CartolaOptimizer
+from src.api.schemas import OptimizationRequest, OptimizationResponse, PlayerResponse
 import pandas as pd
 import sqlite3
 import os
 from pathlib import Path
 
 router = APIRouter()
-
-class OptimizationRequest(BaseModel):
-    strategy: str = "mega"
-    budget: float = 100.0
-    formation: Optional[str] = "4-3-3"
-    config: Optional[Dict] = {}
-
-class OptimizationResponse(BaseModel):
-    total_cost: float
-    total_score: float
-    captain: str
-    players: list
 
 @router.post("/optimize", response_model=OptimizationResponse)
 def optimize_team(request: OptimizationRequest):
