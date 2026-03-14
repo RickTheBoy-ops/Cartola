@@ -1,46 +1,90 @@
-# Configurações do Sistema Cartola FC
+# ============================================
+# CARTOLA FC - CONFIGURAÇÕES GLOBAIS
+# ============================================
 
+# ────────────────────────────────────────────
+# API DO CARTOLA FC
+# ────────────────────────────────────────────
 api:
   base_url: "https://api.cartolafc.globo.com"
-  timeout: 30
+  timeout: 30  # segundos
   max_retries: 5
-  rate_limit_delay: 1.0
+  rate_limit_delay: 1.0  # segundos entre requisições
 
+# ────────────────────────────────────────────
+# BANCO DE DADOS
+# ────────────────────────────────────────────
 database:
   path: "data/cartola.db"
   backup_enabled: true
+  backup_path: "data/backups/"
 
+# ────────────────────────────────────────────
+# CACHE (TTLs em segundos)
+# ────────────────────────────────────────────
 cache:
-  clubes_ttl: 86400 # 24h
-  mercado_status_ttl: 120 # 2min
-  atletas_mercado_ttl: 300 # 5min
-  partidas_ttl: 600 # 10min
-  pontuados_ttl: 60 # 1min
+  clubes_ttl: 86400           # 24h - mudam raramente
+  mercado_status_ttl: 120     # 2min - muda com frequência
+  atletas_mercado_ttl: 300    # 5min - preços mudam
+  partidas_ttl: 600           # 10min
+  pontuados_ttl: 60           # 1min - dados em tempo real
 
+# ────────────────────────────────────────────
+# MACHINE LEARNING
+# ────────────────────────────────────────────
 ml:
-  model_type: "rf" # 'rf' ou 'gb'
-  train_window: 15 # rodadas para treino
+  model_type: "rf"  # 'rf' (Random Forest) ou 'gb' (Gradient Boosting)
+  train_window: 15  # rodadas para treino
   validation_split: 0.2
-  historico_minimo: 30 # registros mínimos para ML
+  historico_minimo: 30  # registros mínimos para ML
+  
+  # Feature Engineering
+  features:
+    rolling_windows: [3, 5, 10]      # janelas móveis
+    ewm_spans: [3, 5]                 # médias exponenciais
+    min_historico: 3                  # mínimo de jogos no histórico
+    include_adversario: true          # features de força do adversário
+    include_mando: true               # features de mando de campo
 
+# ────────────────────────────────────────────
+# MODELOS ML - PARÂMETROS
+# ────────────────────────────────────────────
 predictor:
   rf:
     n_estimators: 200
     max_depth: 15
     min_samples_split: 10
+    min_samples_leaf: 4
+    random_state: 42
+    n_jobs: -1
+  
   gb:
     n_estimators: 150
     learning_rate: 0.1
-    max_depth: 5
+    max_depth: 8
+    min_samples_split: 10
+    min_samples_leaf: 4
+    subsample: 0.8
+    random_state: 42
 
+# ────────────────────────────────────────────
+# OTIMIZADOR GENÉTICO
+# ────────────────────────────────────────────
 optimizer:
-  population_size: 250 # Aumentado para maior diversidade genética
-  generations: 150 # Mais iterações para convergência
-  mutation_rate: 0.20 # Maior exploração do espaço de soluções
-  elite_size: 20 # Preservar mais soluções ótimas
-  max_mesmo_clube: 3 # CRÍTICO: diversificação de clubes (protege de cartola ruim)
-  penalidade_variancia: true # Penaliza atletas com alta variância de pontuação
-
+  population_size: 250       # tamanho da população
+  generations: 150           # número de gerações
+  mutation_rate: 0.20        # taxa de mutação (0.0 - 1.0)
+  elite_size: 20             # top N indivíduos preservados
+  tournament_size: 5         # tamanho do torneio para seleção
+  max_mesmo_clube: 3         # máximo de jogadores do mesmo clube
+  penalidade_variancia: true # penalizar alta variância de pontuação
+  
+  # Pesos para fitness
+  fitness_weights:
+    pontos_preditos: 1.0
+    confianca: 0.3           # peso da confiança da predição
+    consistencia: 0.2        # penalidade por alta variância
+  
   formacoes_disponiveis:
     - "3-4-3"
     - "3-5-2"
@@ -50,12 +94,112 @@ optimizer:
     - "5-3-2"
     - "5-4-1"
 
+# ────────────────────────────────────────────
+# PESOS TÁTICOS
+# ────────────────────────────────────────────
+tactical_weights:
+  # Boost por posição contra defesa fraca
+  oponente_fraco:
+    atacante: 1.30    # +30% para atacantes
+    meia: 1.25        # +25% para meias
+    zagueiro: 1.10    # +10% para zagueiros
+    lateral: 1.10     # +10% para laterais
+    goleiro: 1.05     # +5% para goleiros
+    tecnico: 1.05     # +5% para técnicos
+  
+  # Boost por mando de campo
+  mando_casa:
+    base: 1.10               # +10% base para todos
+    zagueiro_vitorioso: 1.15 # +15% para zagueiros em casa (time forte)
+  
+  # Penalidades
+  penalties:
+    alta_variancia: 0.85     # -15% se desvio padrão > 4.0
+    clube_saturado: 0.70     # -30% se 4+ jogadores do mesmo clube
+    sem_historico: 0.80      # -20% se < 3 jogos no histórico
+
+# ────────────────────────────────────────────
+# FORMAÇÕES TÁTICAS COMPLETAS
+# ────────────────────────────────────────────
+formacoes:
+  "4-3-3":
+    goleiro: 1
+    lateral: 2
+    zagueiro: 2
+    meia: 3
+    atacante: 3
+    tecnico: 1
+  
+  "4-4-2":
+    goleiro: 1
+    lateral: 2
+    zagueiro: 2
+    meia: 4
+    atacante: 2
+    tecnico: 1
+  
+  "3-5-2":
+    goleiro: 1
+    lateral: 0
+    zagueiro: 3
+    meia: 5
+    atacante: 2
+    tecnico: 1
+  
+  "3-4-3":
+    goleiro: 1
+    lateral: 0
+    zagueiro: 3
+    meia: 4
+    atacante: 3
+    tecnico: 1
+  
+  "4-5-1":
+    goleiro: 1
+    lateral: 2
+    zagueiro: 2
+    meia: 5
+    atacante: 1
+    tecnico: 1
+  
+  "5-3-2":
+    goleiro: 1
+    lateral: 2
+    zagueiro: 3
+    meia: 3
+    atacante: 2
+    tecnico: 1
+  
+  "5-4-1":
+    goleiro: 1
+    lateral: 2
+    zagueiro: 3
+    meia: 4
+    atacante: 1
+    tecnico: 1
+
+# ────────────────────────────────────────────
+# VALIDAÇÃO DE DADOS
+# ────────────────────────────────────────────
 validacao:
   preco_minimo: 0.01
-  posicoes_validas: [1, 2, 3, 4, 5, 6]
-  status_validos: [7] # Apenas "Provável"
+  posicoes_validas: [1, 2, 3, 4, 5, 6]  # GOL, LAT, ZAG, MEI, ATA, TEC
+  status_validos: [7]  # Apenas "Provável"
 
+# ────────────────────────────────────────────
+# LOGGING
+# ────────────────────────────────────────────
 logging:
-  level: "INFO"
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
   file: "logs/cartola.log"
+  file_enabled: true
+  console_enabled: true
+
+# ────────────────────────────────────────────
+# DEFAULTS DO SISTEMA
+# ────────────────────────────────────────────
+defaults:
+  patrimonio: 100.0         # cartoletas padrão
+  formacao: "4-3-3"         # formação padrão
+  modelo: "rf"              # modelo ML padrão
