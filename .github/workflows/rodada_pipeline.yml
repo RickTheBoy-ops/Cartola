@@ -132,7 +132,7 @@ jobs:
       # ----------------------------------------------------------------
       - name: "🧠 Rodar Pipeline de Otimização"
         env:
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          ODDS_API_KEY: ${{ secrets.CARTOLA_APIS }}
           CARTOLA_ORCAMENTO: ${{ github.event.inputs.orcamento || '110' }}
           CARTOLA_FORMACAO: ${{ github.event.inputs.formacao || '' }}
           CARTOLA_MODO: ${{ github.event.inputs.modo || 'equilibrado' }}
