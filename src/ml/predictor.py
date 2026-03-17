@@ -44,7 +44,7 @@ class CartolaPredictor:
                 random_state=42
             )
 
-    def prepare_features(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+    def prepare_features(self, df: pd.DataFrame, is_training: bool = False) -> Tuple[pd.DataFrame, pd.Series]:
         """Prepara features para treinamento/predição"""
         feature_cols = [
             # Médias móveis simples
@@ -82,7 +82,8 @@ class CartolaPredictor:
         X = df[available_cols].copy()
         y = df['pontos'].copy() if 'pontos' in df.columns else None
 
-        self.feature_columns = available_cols
+        if is_training:
+            self.feature_columns = available_cols
 
         return X, y
 
@@ -95,7 +96,7 @@ class CartolaPredictor:
             )
             return {'mae': 0, 'rmse': 0, 'r2': 0, 'fallback': True}
 
-        X, y = self.prepare_features(df)
+        X, y = self.prepare_features(df, is_training=True)
 
         if y is None:
             raise ValueError("Target 'pontos' not found in dataframe!")
