@@ -28,7 +28,7 @@ from src.data.collector import CartolaDataCollector
 from src.ml.features import FeatureEngineer
 from src.ml.predictor import CartolaPredictor
 from src.ml.optimizer import GeneticTeamOptimizer
-from src.optimizer.factory import OptimizerFactory
+from src.optimizer.factory import CartolaOptimizer
 from src.features.odds_integrator import OddsIntegrator
 from src.utils.validators import validar_mercado, validar_formacao, filtrar_atletas_com_jogo
 
@@ -171,9 +171,24 @@ def main():
         WHERE rodada >= ? AND rodada <= ?
     """, conn, params=(max(1, rodada_atual - 15), rodada_atual))
 
-    clubes_df = pd.read_sql_query("SELECT * FROM clubes", conn)
-
     conn.close()
+
+    # Buscar clubes direto da API (tabela 'clubes' não existe no DB local)
+    try:
+        import requests
+        r = requests.get("https://api.cartola.globo.com/clubes",
+                         headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+        clubes_raw = r.json()
+        clubes_df = pd.DataFrame([
+            {'id': int(k), 'nome': v.get('nome', ''), 'abreviacao': v.get('abreviacao', '')}
+            for k, v in clubes_raw.items()
+        ])
+        logger.info(f"✅ {len(clubes_df)} clubes carregados da API")
+    except Exception:
+        # Fallback: extrair clubes dos atletas
+        clubes_df = atletas_df[['clube_id']].drop_duplicates().rename(columns={'clube_id': 'id'})
+        clubes_df['nome'] = clubes_df['id'].astype(str)
+        logger.warning("⚠️ Clubes via fallback (apenas IDs)")
 
     logger.info(f"📊 Histórico: {len(historico_df)} registros | Partidas: {len(partidas_df)}")
 
@@ -324,8 +339,7 @@ def main():
     if args.reserva_luxo:
         logger.info("\n🔄 [RESERVA DE LUXO] Calculando reservas ideais...")
         try:
-            from src.optimizer.factory import OptimizerFactory
-            mega_opt = OptimizerFactory.create('mega', config={
+            mega_opt = CartolaOptimizer('mega', config={
                 'max_players_per_club': opt_config.get('max_mesmo_clube', 3),
                 'solver_time_limit': 30,
             })
@@ -345,14 +359,14 @@ def main():
                 selos = predicoes_df[['atleta_id', 'selo_valorizacao', 'mpv', 'margem_valorizacao']].copy()
                 df_mega = df_mega.merge(selos, on='atleta_id', how='left')
 
-            resultado_reserva = mega_opt.optimize_with_luxury_reserve(
+            resultado_reserva = mega_opt.strategy.optimize_with_luxury_reserve(
                 df=df_mega,
                 budget=PATRIMONIO,
                 formation=FORMACAO,
             )
 
             if resultado_reserva:
-                mega_opt.print_lineup_with_reserve(resultado_reserva)
+                mega_opt.strategy.print_lineup_with_reserve(resultado_reserva)
 
                 # Salvar escalação com reservas
                 output_dir = Path(args.output_dir)
