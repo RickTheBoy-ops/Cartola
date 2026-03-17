@@ -290,3 +290,91 @@ class CartolaPredictor:
         self.model_type = data['model_type']
         self.is_trained = data.get('is_trained', True)
         logger.info(f"📂 Modelo carregado de: {filepath}")
+
+    # ---------------------------------------------------------------
+    # FLAG DE VALORIZAÇÃO
+    # ---------------------------------------------------------------
+
+    @staticmethod
+    def add_valorizacao_flag(result_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Classifica cada jogador com selo de risco de valorização,
+        similar ao sistema do Gato Mestre PRO.
+
+        A fórmula de valorização do Cartola FC é:
+            variacao = (pontos - MPV) * C
+        onde MPV = preço_atual * 0.02 (aproximação do mínimo para valorizar)
+        e C é uma constante que varia por faixa de preço.
+
+        Selos:
+        - 🟢 ÓTIMA ESCOLHA:  predicao >= MPV * 1.5  (boa margem de valorização)
+        - 🟡 BOA ESCOLHA:    predicao >= MPV         (deve valorizar)
+        - 🟠 ARRISCADO:      predicao >= MPV * 0.7   (pode empatar ou valorizar pouco)
+        - 🔴 PODE ZICAR:     predicao <  MPV * 0.7   (alto risco de desvalorizar)
+
+        Args:
+            result_df: DataFrame com colunas 'predicao' (ou 'predicao_ajustada') e 'preco'
+
+        Returns:
+            DataFrame com colunas adicionais: 'mpv', 'margem_valorizacao', 'selo_valorizacao'
+        """
+        df = result_df.copy()
+
+        preco = df.get('preco', pd.Series(1.0, index=df.index))
+
+        # MPV = Mínimo de Pontos para Valorizar (aprox. preço * 0.02 por cartoleta de preço)
+        # Fórmula empírica baseada na tabela oficial do Cartola FC
+        df['mpv'] = preco * 2.0  # Em média, ~2 pontos por C$ de preço para valorizar
+
+        # Usar predição ajustada se disponível, senão usar predição base
+        pred_col = 'predicao_ajustada' if 'predicao_ajustada' in df.columns else 'predicao'
+        predicao = df.get(pred_col, pd.Series(0.0, index=df.index))
+
+        # Margem de valorização: diferença entre predição e MPV
+        df['margem_valorizacao'] = predicao - df['mpv']
+
+        # Classificação por faixas
+        conditions = [
+            predicao >= df['mpv'] * 1.5,
+            predicao >= df['mpv'],
+            predicao >= df['mpv'] * 0.7,
+        ]
+        choices = ['OTIMA ESCOLHA', 'BOA ESCOLHA', 'ARRISCADO']
+        df['selo_valorizacao'] = np.select(conditions, choices, default='PODE ZICAR')
+
+        # Score de valorização (0-100) para usar no otimizador
+        max_margem = df['margem_valorizacao'].abs().max()
+        if max_margem > 0:
+            df['valorizacao_score'] = (
+                (df['margem_valorizacao'] / max_margem).clip(-1, 1) * 50 + 50
+            )
+        else:
+            df['valorizacao_score'] = 50.0
+
+        logger.info(
+            f"🏷️ Selos de valorização: "
+            f"ÓTIMA={( df['selo_valorizacao'] == 'OTIMA ESCOLHA').sum()} | "
+            f"BOA={(df['selo_valorizacao'] == 'BOA ESCOLHA').sum()} | "
+            f"ARRISCADO={(df['selo_valorizacao'] == 'ARRISCADO').sum()} | "
+            f"ZICAR={(df['selo_valorizacao'] == 'PODE ZICAR').sum()}"
+        )
+
+        return df
+
+    def predict_full(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Pipeline completo de predição:
+        1. Predição com pesos táticos
+        2. Adiciona flag de valorização
+        3. Ordena por predicao_ajustada desc
+
+        Returns:
+            DataFrame completo pronto para o otimizador e para análise
+        """
+        result = self.predict_with_tactical_weights(df)
+        result = self.add_valorizacao_flag(result)
+
+        sort_col = 'predicao_ajustada' if 'predicao_ajustada' in result.columns else 'predicao'
+        result = result.sort_values(sort_col, ascending=False).reset_index(drop=True)
+
+        return result

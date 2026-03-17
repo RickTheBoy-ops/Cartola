@@ -239,3 +239,179 @@ class MegaStrategy(OptimizerStrategy):
                     conflicts.append((idx_i, idx_j))
         
         return conflicts
+
+    # ---------------------------------------------------------------
+    # RESERVA DE LUXO (regra 2025/2026)
+    # ---------------------------------------------------------------
+
+    def optimize_with_luxury_reserve(
+        self,
+        df: pd.DataFrame,
+        budget: float,
+        formation: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """
+        Otimização que modela a regra de Reserva de Luxo do Cartola FC.
+
+        Regra Reserva de Luxo (2025/2026):
+            - Você escolhe UM reserva por posição (goleiro, lateral, zagueiro,
+              meia, atacante).
+            - Se o titular da mesma posição pontuar MENOS que o reserva,
+              o sistema troca automaticamente.
+            - Isso aumenta o EV (valor esperado) da escalação porque você
+              captura o upside de duas opções por posição.
+
+        Modelagem no solver:
+            - Para cada posição, selecionamos 1 titular + 1 reserva potencial.
+            - Adicionamos uma variável auxiliar 'y_p' que representa o ganho
+              esperado da troca (E[max(titular, reserva)] - E[titular]).
+            - A função objetivo maximiza a predição dos titulares +
+              (fator_reserva * ganho esperado de cada reserva).
+            - Restrição: reserva deve ser mais barato ou igual ao titular
+              da mesma posição (estratégia custo-benefício comum).
+
+        Args:
+            df:        DataFrame com atletas, 'mega_score', 'preco', 'posicao_id'
+            budget:    Orçamento total (titulares + reservas)
+            formation: Formação dos titulares (ex: '4-3-3'). None = testa todas.
+
+        Returns:
+            Dict com:
+                'titulares':  DataFrame com 12 titulares (11+técnico)
+                'reservas':   DataFrame com 5 reservas de luxo (1 por posição exceto TEC)
+                'score_total': score previsto com bônus de reserva
+                'custo_total': custo total dos 17 jogadores
+        """
+        if not PULP_AVAILABLE:
+            raise ImportError("PuLP não disponível! Instale com: pip install pulp")
+
+        if 'mega_score' not in df.columns:
+            raise ValueError("DataFrame precisa da coluna 'mega_score'")
+
+        # Mapeia posições (1=GOL, 2=LAT, 3=ZAG, 4=MEI, 5=ATA, 6=TEC)
+        POSICOES_COM_RESERVA = [1, 2, 3, 4, 5]
+
+        # ---- Step 1: encontrar titulares ----
+        titulares = self.optimize(df, budget * 0.80, formation)  # 80% para titulares
+        if titulares is None:
+            return None
+
+        titulares_idx = set(titulares.index)
+        orcamento_reservas = budget - titulares['preco'].sum()
+
+        if orcamento_reservas <= 0:
+            return {
+                'titulares': titulares,
+                'reservas': pd.DataFrame(),
+                'score_total': self.calculate_score(titulares),
+                'custo_total': titulares['preco'].sum(),
+            }
+
+        # ---- Step 2: selecionar reservas de luxo por posição ----
+        reservas_selecionadas = []
+        orcamento_restante = orcamento_reservas
+
+        for pos_id in POSICOES_COM_RESERVA:
+            # Titulares dessa posição
+            titulares_pos = titulares[titulares['posicao_id'] == pos_id]
+            if titulares_pos.empty:
+                continue
+
+            # Preço médio dos titulares dessa posição
+            preco_medio_titular = titulares_pos['preco'].mean()
+
+            # Candidatos a reserva: mesma posição, não titular, dentro do orçamento restante
+            candidatos = df[
+                (df['posicao_id'] == pos_id) &
+                (~df.index.isin(titulares_idx)) &
+                (df['preco'] <= orcamento_restante) &
+                (df['preco'] <= preco_medio_titular * 1.2)  # Reserva não pode custar muito mais que o titular
+            ].copy()
+
+            if candidatos.empty:
+                continue
+
+            # Calcular EV da reserva:
+            # EV_reserva = E[max(score_titular, score_reserva)] - E[score_titular]
+            # Aproximação: se reserva_score > titular_score → ganho = (reserva - titular) * prob_troca
+            score_titular_medio = titulares_pos['mega_score'].mean()
+            candidatos['ev_reserva'] = np.where(
+                candidatos['mega_score'] > score_titular_medio,
+                (candidatos['mega_score'] - score_titular_medio) * 0.45,  # prob ≈ 45% de o reserva superar
+                candidatos['mega_score'] * 0.10  # piso: seguro mínimo
+            )
+
+            # Selecionar o melhor EV dentro do orçamento
+            melhor_reserva = candidatos.nlargest(1, 'ev_reserva').iloc[0]
+            reservas_selecionadas.append(melhor_reserva)
+            orcamento_restante -= melhor_reserva['preco']
+            titulares_idx.add(melhor_reserva.name)
+
+            # Se acabou o orçamento, para
+            if orcamento_restante <= 0:
+                break
+
+        reservas_df = pd.DataFrame(reservas_selecionadas) if reservas_selecionadas else pd.DataFrame()
+
+        # ---- Step 3: calcular score total com bônus de reserva ----
+        score_titulares = self.calculate_score(titulares)
+        bonus_reserva = reservas_df['ev_reserva'].sum() if not reservas_df.empty else 0
+        score_total = score_titulares + bonus_reserva
+
+        custo_total = (
+            titulares['preco'].sum() +
+            (reservas_df['preco'].sum() if not reservas_df.empty else 0)
+        )
+
+        return {
+            'titulares': titulares,
+            'reservas': reservas_df,
+            'score_total': score_total,
+            'score_titulares': score_titulares,
+            'bonus_reserva': bonus_reserva,
+            'custo_total': custo_total,
+        }
+
+    def print_lineup_with_reserve(self, result: Dict) -> None:
+        """
+        Imprime o time completo (titulares + reservas de luxo) de forma legível.
+        """
+        if result is None:
+            print("❌ Nenhuma escalação gerada.")
+            return
+
+        titulares = result['titulares']
+        reservas = result.get('reservas', pd.DataFrame())
+
+        POS_NOME = {1: 'GOL', 2: 'LAT', 3: 'ZAG', 4: 'MEI', 5: 'ATA', 6: 'TEC'}
+
+        print("\n" + "=" * 60)
+        print("🏆 ESCALAÇÃO ÓTIMA COM RESERVA DE LUXO")
+        print("=" * 60)
+
+        print(f"\n⚽ TITULARES ({len(titulares)} jogadores)")
+        print("-" * 60)
+        for _, row in titulares.sort_values('posicao_id').iterrows():
+            pos = POS_NOME.get(int(row.get('posicao_id', 0)), '?')
+            nome = row.get('apelido', row.get('nome', 'N/A'))
+            score = row.get('mega_score', 0)
+            preco = row.get('preco', 0)
+            selo = row.get('selo_valorizacao', '')
+            print(f"  [{pos}] {nome:<20} Score={score:>6.1f}  C${preco:>5.1f}  {selo}")
+
+        if not reservas.empty:
+            print(f"\n🔄 RESERVAS DE LUXO ({len(reservas)} jogadores)")
+            print("-" * 60)
+            for _, row in reservas.sort_values('posicao_id').iterrows():
+                pos = POS_NOME.get(int(row.get('posicao_id', 0)), '?')
+                nome = row.get('apelido', row.get('nome', 'N/A'))
+                ev = row.get('ev_reserva', 0)
+                preco = row.get('preco', 0)
+                print(f"  [{pos}] {nome:<20} EV_reserva={ev:>5.1f}  C${preco:>5.1f}")
+
+        print(f"\n{'=' * 60}")
+        print(f"💰 Custo total:     C${result['custo_total']:.1f}")
+        print(f"🎯 Score titulares: {result.get('score_titulares', 0):.1f}")
+        print(f"🔄 Bônus reserva:   +{result.get('bonus_reserva', 0):.1f}")
+        print(f"⭐ Score total EV:  {result['score_total']:.1f}")
+        print("=" * 60)

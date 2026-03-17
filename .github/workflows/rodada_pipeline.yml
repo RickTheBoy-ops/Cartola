@@ -1,0 +1,189 @@
+name: Cartola - Pipeline Automático por Rodada
+
+# ====================================================================
+# TRIGGER AUTOMÁTICO POR RODADA
+#
+# Roda automaticamente:
+#  - Toda sexta-feira às 18h (BRT) para preparar o fim de semana
+#  - Toda quarta-feira às 18h (BRT) para preparar rodadas mid-week
+#  - Manualmente (workflow_dispatch) com parâmetros customizados
+#
+# O pipeline faz:
+#  1. Baixa dados atuais da API do Cartola FC
+#  2. Roda feature engineering V3 (com MC/MF, pontos cedidos, odds)
+#  3. Treina/atualiza modelo ML
+#  4. Gera predições com selos de valorização
+#  5. Roda otimizador com Reserva de Luxo
+#  6. Salva escalação otimizada em output/ e artifacts do GitHub
+# ====================================================================
+
+on:
+  schedule:
+    # Sexta 18h BRT = Sexta 21h UTC
+    - cron: "0 21 * * 5"
+    # Quarta 18h BRT = Quarta 21h UTC
+    - cron: "0 21 * * 3"
+
+  # Permite rodar manualmente via GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      orcamento:
+        description: "Orçamento em cartoletas (padrão: 110)"
+        required: false
+        default: "110"
+        type: string
+      formacao:
+        description: "Formação fixa (ex: 4-3-3). Vazio = testar todas"
+        required: false
+        default: ""
+        type: string
+      modo:
+        description: "Modo de otimização"
+        required: false
+        default: "equilibrado"
+        type: choice
+        options:
+          - equilibrado
+          - pontuar
+          - valorizar
+
+  # Roda também em push no main (para validar que o pipeline não quebrou)
+  push:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "config.yaml"
+
+jobs:
+  # ------------------------------------------------------------------
+  # JOB 1: Validação rápida (sempre roda)
+  # ------------------------------------------------------------------
+  lint-and-test:
+    name: "Testes Unitários"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependências
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Rodar testes
+        run: pytest tests/ -v --tb=short
+
+  # ------------------------------------------------------------------
+  # JOB 2: Pipeline de Rodada (roda no schedule + dispatch)
+  # ------------------------------------------------------------------
+  pipeline-rodada:
+    name: "Pipeline Automático da Rodada"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Só roda no schedule ou no dispatch manual (não em push normal)
+    if: |
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch'
+
+    needs: lint-and-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependências
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ----------------------------------------------------------------
+      # STEP: Baixar dados da rodada atual
+      # ----------------------------------------------------------------
+      - name: "📡 Baixar dados do Cartola FC"
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from src.cartola_data_collector import download_current_data, save_current_data
+          data = download_current_data()
+          if data:
+              save_current_data(data)
+              print('✅ Dados baixados com sucesso')
+          else:
+              print('⚠️ Mercado fechado ou API indisponível')
+          "
+        continue-on-error: true  # Pipeline continua mesmo se API estiver fechada
+
+      # ----------------------------------------------------------------
+      # STEP: Rodar pipeline completo de otimização
+      # ----------------------------------------------------------------
+      - name: "🧠 Rodar Pipeline de Otimização"
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          CARTOLA_ORCAMENTO: ${{ github.event.inputs.orcamento || '110' }}
+          CARTOLA_FORMACAO: ${{ github.event.inputs.formacao || '' }}
+          CARTOLA_MODO: ${{ github.event.inputs.modo || 'equilibrado' }}
+        run: |
+          python main.py \
+            --orcamento "$CARTOLA_ORCAMENTO" \
+            --formacao "$CARTOLA_FORMACAO" \
+            --modo "$CARTOLA_MODO" \
+            --output-dir output/ \
+            --reserva-luxo \
+            --v3-features
+
+      # ----------------------------------------------------------------
+      # STEP: Salvar escalação como artifact do GitHub
+      # ----------------------------------------------------------------
+      - name: "💾 Salvar escalação gerada"
+        uses: actions/upload-artifact@v4
+        with:
+          name: escalacao-rodada-${{ github.run_number }}
+          path: output/*.xlsx
+          retention-days: 30
+
+      # ----------------------------------------------------------------
+      # STEP: Commitar dados da rodada no repo (opcional)
+      # ----------------------------------------------------------------
+      - name: "📂 Commitar dados da rodada atual"
+        run: |
+          git config --global user.name "Cartola Bot"
+          git config --global user.email "bot@cartola-optimizer.local"
+          git add data/current/ output/
+          git diff --cached --quiet || git commit -m "🤖 Dados e escalação da rodada [skip ci]"
+          git push || echo "Nada para commitar"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+  # ------------------------------------------------------------------
+  # JOB 3: Build Docker (só no push para main)
+  # ------------------------------------------------------------------
+  build-docker:
+    name: "Build Docker"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: lint-and-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build imagem Streamlit
+        run: |
+          docker build -f Dockerfile.streamlit -t cartola-streamlit:latest .
+          echo "✅ Imagem Streamlit buildada com sucesso"

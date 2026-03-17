@@ -467,3 +467,177 @@ class FeatureEngineer:
         logger.info(f"✅ Feature engineering concluído: {df.shape[1]} colunas criadas")
 
         return df
+
+
+    # ---------------------------------------------------------------
+    # FEATURES MANDO DE CAMPO (MC/MF) E PONTOS CEDIDOS POR POSIÇÃO
+    # ---------------------------------------------------------------
+
+    @staticmethod
+    def add_home_away_averages(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calcula médias separadas por mando de campo (MC e MF) para cada atleta.
+
+        MC = média como mandante (últimas 3 e 5 rodadas jogando em casa)
+        MF = média como visitante (últimas 3 e 5 rodadas jogando fora)
+
+        Essas métricas são usadas pelos top cartoleiros para filtrar
+        jogadores conforme o tipo de jogo da rodada.
+        """
+        if 'mando_casa' not in df.columns:
+            df['mc_3'] = df.get('pontos_media_3', 0)
+            df['mc_5'] = df.get('pontos_media_5', 0)
+            df['mf_3'] = df.get('pontos_media_3', 0)
+            df['mf_5'] = df.get('pontos_media_5', 0)
+            return df
+
+        df = df.sort_values(['atleta_id', 'rodada'])
+
+        for window, suffix in [(3, '3'), (5, '5')]:
+            mc_col = f'mc_{suffix}'
+            mf_col = f'mf_{suffix}'
+
+            def rolling_mean_home(group):
+                home_pts = group.loc[group['mando_casa'] == 1, 'pontos']
+                result = pd.Series(np.nan, index=group.index)
+                # Preencher a média móvel apenas nas rodadas mandante
+                rolling_vals = home_pts.rolling(window, min_periods=1).mean()
+                result.loc[rolling_vals.index] = rolling_vals
+                # Forward fill para que o valor fique disponível em rodadas visitante também
+                result = result.ffill().bfill().fillna(0)
+                return result
+
+            def rolling_mean_away(group):
+                away_pts = group.loc[group['mando_casa'] == 0, 'pontos']
+                result = pd.Series(np.nan, index=group.index)
+                rolling_vals = away_pts.rolling(window, min_periods=1).mean()
+                result.loc[rolling_vals.index] = rolling_vals
+                result = result.ffill().bfill().fillna(0)
+                return result
+
+            try:
+                df[mc_col] = df.groupby('atleta_id', group_keys=False).apply(rolling_mean_home)
+                df[mf_col] = df.groupby('atleta_id', group_keys=False).apply(rolling_mean_away)
+            except Exception as e:
+                logger.warning(f"⚠️ Erro em add_home_away_averages (window={window}): {e}")
+                df[mc_col] = df.get('pontos_media_3', 0)
+                df[mf_col] = df.get('pontos_media_3', 0)
+
+        # Vantagem mandante: diferença mc_5 - mf_5
+        df['vantagem_mandante'] = df['mc_5'] - df['mf_5']
+
+        # Feature final: média relevante conforme mando da rodada atual
+        df['media_mando_relevante'] = np.where(
+            df['mando_casa'] == 1,
+            df['mc_5'],
+            df['mf_5']
+        )
+
+        logger.info("✅ Features MC/MF calculadas (janelas 3 e 5)")
+        return df
+
+    @staticmethod
+    def add_points_conceded_by_position(df: pd.DataFrame, partidas_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calcula quantos pontos cada time cedeu para cada posição historicamente.
+
+        'pontos_cedidos_posicao' = média de pontos que o adversário concede
+        para a posição do atleta → quanto maior, mais fraca é a defesa
+        do adversário naquela posição → mais favorável para escalar.
+
+        Exemplo prático:
+        - Lateral do Flamengo vai enfrentar Botafogo
+        - Botafogo cedeu em média 7.2 pts para laterais nos últimos 5 jogos
+        - Isso aumenta o score do lateral do Flamengo nessa rodada
+        """
+        if partidas_df is None or len(partidas_df) == 0:
+            df['pontos_cedidos_posicao'] = 0.5
+            return df
+
+        if 'posicao_id' not in df.columns or 'clube_id' not in df.columns:
+            df['pontos_cedidos_posicao'] = 0.5
+            return df
+
+        try:
+            # Precisamos do histórico de pontos por atleta/partida para calcular
+            # quanto cada time cedeu por posição
+            # df deve ter: atleta_id, clube_id, posicao_id, pontos, rodada
+            # partidas_df deve ter: clube_casa_id, clube_visitante_id, rodada
+
+            # Mapeamento adversário por rodada e clube
+            casa_map = partidas_df[['rodada', 'clube_casa_id', 'clube_visitante_id']].copy()
+            casa_map.columns = ['rodada', 'clube_id', 'adversario_id']
+
+            visit_map = partidas_df[['rodada', 'clube_visitante_id', 'clube_casa_id']].copy()
+            visit_map.columns = ['rodada', 'clube_id', 'adversario_id']
+
+            adversarios = pd.concat([casa_map, visit_map], ignore_index=True)
+
+            # Join atleta -> adversário
+            df_temp = df.merge(adversarios, on=['rodada', 'clube_id'], how='left')
+
+            if 'adversario_id' not in df_temp.columns or df_temp['adversario_id'].isna().all():
+                df['pontos_cedidos_posicao'] = 0.5
+                return df
+
+            # Pontos cedidos por time por posição (visão do adversário)
+            # O adversário "cedeu" os pontos que o atleta fez contra ele
+            cedidos = (
+                df_temp
+                .groupby(['adversario_id', 'posicao_id'])['pontos']
+                .mean()
+                .reset_index()
+                .rename(columns={
+                    'adversario_id': 'adversario_clube_id',
+                    'pontos': 'pontos_cedidos_posicao'
+                })
+            )
+
+            # Normalizar 0-1 dentro de cada posição
+            for pos in cedidos['posicao_id'].unique():
+                mask = cedidos['posicao_id'] == pos
+                vals = cedidos.loc[mask, 'pontos_cedidos_posicao']
+                max_val = vals.max()
+                if max_val > 0:
+                    cedidos.loc[mask, 'pontos_cedidos_posicao'] = (vals / max_val).clip(0, 1)
+
+            # Adicionar adversário da rodada atual ao df original
+            df = df.merge(adversarios, on=['rodada', 'clube_id'], how='left')
+            df = df.rename(columns={'adversario_id': 'adversario_clube_id'})
+            df = df.merge(cedidos, on=['adversario_clube_id', 'posicao_id'], how='left')
+            df['pontos_cedidos_posicao'] = df['pontos_cedidos_posicao'].fillna(0.5)
+
+            # Remover coluna temporária
+            df = df.drop(columns=['adversario_clube_id'], errors='ignore')
+
+            logger.info("✅ Feature 'pontos_cedidos_posicao' calculada com sucesso")
+
+        except Exception as e:
+            logger.warning(f"⚠️ Erro em add_points_conceded_by_position: {e}")
+            df['pontos_cedidos_posicao'] = 0.5
+
+        return df
+
+    @classmethod
+    def engineer_all_features_v3(
+        cls,
+        df: pd.DataFrame,
+        partidas_df: pd.DataFrame
+    ) -> pd.DataFrame:
+        """
+        Versão V3 do pipeline completo de features.
+        Adiciona MC/MF e pontos cedidos por posição ao pipeline existente.
+        """
+        # Roda pipeline base (V2)
+        df = cls.engineer_all_features(df, partidas_df)
+
+        # === NOVAS FEATURES V3 ===
+        df = cls.add_home_away_averages(df)
+        df = cls.add_points_conceded_by_position(df, partidas_df)
+
+        # Remover NaN / infinitos residuais
+        df = df.fillna(0)
+        df = df.replace([np.inf, -np.inf], 0)
+
+        logger.info(f"✅ Feature engineering V3 concluído: {df.shape[1]} colunas")
+        return df
