@@ -323,16 +323,34 @@ class CartolaPredictor:
 
         preco = df.get('preco', pd.Series(1.0, index=df.index))
         media = df.get('media', pd.Series(0.0, index=df.index))
+        jogos = df.get('jogos', pd.Series(0, index=df.index))
 
-        # MPV = Mínimo de Pontos para Valorizar
-        # A API do Cartola não expõe este campo diretamente.
-        # Fórmula validada empiricamente: MPV ≈ media * 1.25
-        # Ex: Léo Pereira (média 5.53) → MPV = 6.91 ≈ 7 (valor reportado pela API)
-        # Jogadores sem histórico (média 0) usam fallback de preco * 0.6
+        # ====================================================================
+        # MPV 2025 — Fórmula oficial do Cartola FC (ModeloCartoletas/GitHub)
+        # A partir de 2025, a valorização depende de `jogos_num` (não da rodada).
+        # Rodadas 1–3 (jogos <= 3): MPV ≈ Preço × 0,46
+        # A partir da rodada 4 (jogos > 3): MPV ≈ Média (precisa superar a média)
+        # Referência: github.com/joaoabcoelho/ModeloCartoletas
+        # ====================================================================
         if 'minimo_para_valorizar' in df.columns:
+            # Se a API passar o valor (ex: Gato Mestre PRO), usar direto
             df['mpv'] = df['minimo_para_valorizar']
         else:
-            df['mpv'] = media.where(media > 0, preco * 0.6) * 1.25
+            mpv_series = pd.Series(index=df.index, dtype=float)
+
+            # Rodadas iniciais: preço × 0.46
+            mask_inicial = jogos <= 3
+            mpv_series[mask_inicial] = preco[mask_inicial] * 0.46
+
+            # Rodadas 4+: precisa superar a média (acrescentamos margem de 5%)
+            mask_consolidado = ~mask_inicial
+            mpv_series[mask_consolidado] = media[mask_consolidado] * 1.05
+
+            # Fallback para atletas sem dados (media=0, jogos=0)
+            mask_sem_dados = (media == 0) & (jogos == 0)
+            mpv_series[mask_sem_dados] = preco[mask_sem_dados] * 0.46
+
+            df['mpv'] = mpv_series.clip(lower=0)
 
 
         # Usar predição ajustada se disponível, senão usar predição base

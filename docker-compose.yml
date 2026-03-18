@@ -17,5 +17,5 @@ services:
       - CARTOLA_EMAIL=${CARTOLA_EMAIL}
       - CARTOLA_PASSWORD=${CARTOLA_PASSWORD}
       - ODDS_API_KEY=${ODDS_API_KEY}
-    command: uvicorn src.api.rest_app:app --host 0.0.0.0 --port 8000 --reload
+    command: python -m uvicorn src.api.rest_app:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped

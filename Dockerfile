@@ -41,4 +41,4 @@ COPY . .
 EXPOSE 8000
 
 # Comando para rodar a aplicação via Uvicorn
-CMD ["uvicorn", "src.api.rest_app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "src.api.rest_app:app", "--host", "0.0.0.0", "--port", "8000"]
