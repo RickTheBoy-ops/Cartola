@@ -326,31 +326,50 @@ class CartolaPredictor:
         jogos = df.get('jogos', pd.Series(0, index=df.index))
 
         # ====================================================================
-        # MPV 2025 — Fórmula oficial do Cartola FC (ModeloCartoletas/GitHub)
-        # A partir de 2025, a valorização depende de `jogos_num` (não da rodada).
-        # Rodadas 1–3 (jogos <= 3): MPV ≈ Preço × 0,46
-        # A partir da rodada 4 (jogos > 3): MPV ≈ Média (precisa superar a média)
-        # Referência: github.com/joaoabcoelho/ModeloCartoletas
+        # MPV 2025 — Formula exata baseada em github.com/joaoabcoelho/ModeloCartoletas
+        # O Fator de Inflação "s" balanceia o mercado.
+        # As pontuações convergem para:
+        # novo_preco = s * ( p + ka * a_new + kc * custo_medio )
         # ====================================================================
-        if 'minimo_para_valorizar' in df.columns:
-            # Se a API passar o valor (ex: Gato Mestre PRO), usar direto
+        has_official_mpv = (
+            'minimo_para_valorizar' in df.columns and
+            df['minimo_para_valorizar'].notna().any() and
+            (df['minimo_para_valorizar'] != 0.0).any()
+        )
+
+        if has_official_mpv:
             df['mpv'] = df['minimo_para_valorizar']
         else:
-            mpv_series = pd.Series(index=df.index, dtype=float)
+            # 1. Definir Fator de Inflação Base (s ≈ 0.13 a 0.15)
+            # Aproximamos para 0.135 no mercado geral se não calcularmos a média bruta de 800 atletas
+            s = 0.1335 
+            
+            p_series = pd.Series(index=df.index, dtype=float)
+            
+            # Precisamos resolver a equação p (pontos para manter o preço => novo_preco = preco)
+            # Assumimos `custo_medio` aproximado como `preco` já que a API não libera histórico consolidado.
+            cm = preco
+            
+            g_new = jogos + 1
+            
+            # Constantes do modelo Cartoletas
+            ka = (3 + g_new) / 2
+            kc = (15 - g_new) / 2
+            ka = ka.mask(g_new > 5, 4.0)
+            kc = kc.mask(g_new > 5, 5.0)
+            
+            # Resolver p na equação: p * (1 + ka / g_new) = (preco / s) - (ka * media * jogos / g_new) - (kc * cm)
+            termo_direita = (preco / s) - (ka * media * jogos / g_new) - (kc * cm)
+            termo_esquerda = 1 + (ka / g_new)
+            
+            p_resolvido = termo_direita / termo_esquerda
+            
+            # Proteção para atletas que ainda não jogaram (Modelo Cartoletas aplica regra diferente p/ estreantes)
+            mask_estreante = (jogos == 0)
+            p_resolvido[mask_estreante] = preco[mask_estreante] * 0.46
+            
+            df['mpv'] = p_resolvido.clip(lower=-10.0) # MPV pode ser negativo para craques caros não perderem tanto
 
-            # Rodadas iniciais: preço × 0.46
-            mask_inicial = jogos <= 3
-            mpv_series[mask_inicial] = preco[mask_inicial] * 0.46
-
-            # Rodadas 4+: precisa superar a média (acrescentamos margem de 5%)
-            mask_consolidado = ~mask_inicial
-            mpv_series[mask_consolidado] = media[mask_consolidado] * 1.05
-
-            # Fallback para atletas sem dados (media=0, jogos=0)
-            mask_sem_dados = (media == 0) & (jogos == 0)
-            mpv_series[mask_sem_dados] = preco[mask_sem_dados] * 0.46
-
-            df['mpv'] = mpv_series.clip(lower=0)
 
 
         # Usar predição ajustada se disponível, senão usar predição base
