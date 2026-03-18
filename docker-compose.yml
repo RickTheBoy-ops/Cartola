@@ -1,28 +1,21 @@
-version: "3.8"
+version: '3.8'
 
 services:
-  api:
-    build:
+  cartola-api:
+    build: 
       context: .
-      dockerfile: Dockerfile.api
+      dockerfile: Dockerfile
+    container_name: cartola_optimizer_api
     ports:
       - "8000:8000"
     volumes:
+      - .:/app  # Hot-reload para desenvolvimento
+      # Volume para persistir o banco de dados sqlite localmente
       - ./data:/app/data
+      - ./output:/app/output
     environment:
-      - PYTHONUNBUFFERED=1
-    restart: unless-stopped
-
-  dashboard:
-    build:
-      context: .
-      dockerfile: Dockerfile.streamlit
-    ports:
-      - "8501:8501"
-    volumes:
-      - ./data:/app/data
-    environment:
-      - PYTHONUNBUFFERED=1
-    depends_on:
-      - api
+      - CARTOLA_EMAIL=${CARTOLA_EMAIL}
+      - CARTOLA_PASSWORD=${CARTOLA_PASSWORD}
+      - ODDS_API_KEY=${ODDS_API_KEY}
+    command: uvicorn src.api.rest_app:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped

@@ -283,12 +283,12 @@ def main():
     predicoes_para_opt = predicoes_df.copy()
     if 'predicao_std' not in predicoes_para_opt.columns:
         predicoes_para_opt['predicao_std'] = 0.0
-    predicoes_para_opt['predicao'] = predicoes_para_opt['score_final']
+    predicoes_para_opt['fitness_score'] = predicoes_para_opt['score_final']
 
     # Adicionar odds_score como coluna extra se disponível (para o otimizador usar)
     if 'odds_score' in predicoes_para_opt.columns:
-        predicoes_para_opt['predicao'] = (
-            predicoes_para_opt['predicao'] * 0.8 +
+        predicoes_para_opt['fitness_score'] = (
+            predicoes_para_opt['fitness_score'] * 0.8 +
             predicoes_para_opt['odds_score'] * 20 * 0.2
         )
 

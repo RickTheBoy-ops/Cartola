@@ -24,10 +24,10 @@ class AtletaModel(BaseModel):
         return v
 
 class OptimizationRequest(BaseModel):
-    strategy: str = Field(default="mega", description="Estratégia de otimização (mega, genetic, ensemble)")
-    budget: float = Field(default=100.0, description="Orçamento disponível em cartoletas")
+    strategy: str = Field(default="genetic", description="Estratégia de otimização (genetic, mega)")
+    budget: float = Field(default=110.0, description="Orçamento disponível em cartoletas")
     formation: Optional[str] = Field(default="4-3-3", description="Formação tática. Ex: 4-3-3, 3-4-3")
-    config: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Configurações extras da estratégia")
+    config: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Configurações (modo: pontuar/valorizar/equilibrado)")
 
     @validator('budget')
     def budget_positivo(cls, v):
@@ -36,11 +36,13 @@ class OptimizationRequest(BaseModel):
         return v
 
 class PlayerResponse(BaseModel):
-    atleta_id: int
     apelido: str
-    posicao_id: int
+    posicao_nome: str
+    clube: str
     preco: float
     score_projetado: float
+    pontos_esperados: float
+    minimo_para_valorizar: float
 
 class OptimizationResponse(BaseModel):
     total_cost: float

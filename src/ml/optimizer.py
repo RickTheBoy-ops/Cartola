@@ -87,11 +87,18 @@ class GeneticTeamOptimizer:
         atletas_validos = filtrar_atletas_validos(atletas_df)
 
         # Merge atletas com predições
+        cols_to_merge = ['atleta_id', 'predicao']
+        if 'fitness_score' in predicoes.columns:
+            cols_to_merge.append('fitness_score')
+        if 'mpv' in predicoes.columns:
+            cols_to_merge.append('mpv')
+
         self.data = atletas_validos.merge(
-            predicoes[['atleta_id', 'predicao']],
+            predicoes[cols_to_merge],
             on='atleta_id',
             how='inner'
         )
+        self.fitness_col = 'fitness_score' if 'fitness_score' in self.data.columns else 'predicao'
 
         # Garantir que 'media' existe
         if 'media' not in self.data.columns:
@@ -180,7 +187,7 @@ class GeneticTeamOptimizer:
         if key in self._fitness_cache:
             return self._fitness_cache[key]
 
-        total_pontos = sum(atleta.get('predicao', 0) for atleta in team)
+        total_pontos = sum(atleta.get(self.fitness_col, 0) for atleta in team)
         total_preco = sum(atleta.get('preco', 0) for atleta in team)
 
         # === Penalidade: ultrapassar patrimônio ===
@@ -199,16 +206,26 @@ class GeneticTeamOptimizer:
         else:
             bonus = 0
 
-        # === Penalidade: muitos jogadores do mesmo clube ===
+        # === Penalidade: muitos jogadores do mesmo clube e risco de SGs ===
         clubes = {}
+        clubes_defesa = {}
         for a in team:
             clube_id = a.get('clube_id', 0)
+            pos = a.get('posicao_id', 0)
+            
             clubes[clube_id] = clubes.get(clube_id, 0) + 1
+            if pos in [1, 2, 3]: # Defesa
+                clubes_defesa[clube_id] = clubes_defesa.get(clube_id, 0) + 1
 
         penalidade_clube = 0
         for clube_id, count in clubes.items():
             if count > self.max_mesmo_clube:
-                penalidade_clube += (count - self.max_mesmo_clube) * 5  # Penalidade mais severa
+                penalidade_clube += (count - self.max_mesmo_clube) * 5  # Penalidade base
+                
+        # Hardcore Rule: Exposição Defensiva (Max 2 defensores do mesmo time)
+        for clube_id, count_def in clubes_defesa.items():
+            if count_def > 2:
+                penalidade_clube += (count_def - 2) * 12 # Penalização severa de quebra de SG coletiva
 
         # === Penalidade: alta variância (atletas instáveis) ===
         penalidade_variancia = 0
@@ -382,31 +399,60 @@ class GeneticTeamOptimizer:
         return best_team, stats
 
     def format_team_output(self, team: List[Dict]) -> pd.DataFrame:
-        """Formata time otimizado para exibição (robusto)"""
-        df = pd.DataFrame(team)
+        """Formata time otimizado para exibição com marcação do Capitão (C)"""
+        
+        # === Hardcore Rule: Gestão do Capitão ===
+        melhor_score = -1
+        capitao_idx = -1
+        score_col = getattr(self, 'fitness_col', 'predicao')
+        
+        for i, a in enumerate(team):
+            if a.get('posicao_id') in [4, 5]: # Foco em Meia (4) ou Atacante (5)
+                # Bônus se jogar em casa, essencial para capitão
+                score_estimado = a.get(score_col, 0)
+                if a.get('mando_casa', 0) == 1:
+                    score_estimado *= 1.25 
+                
+                if score_estimado > melhor_score:
+                    melhor_score = score_estimado
+                    capitao_idx = i
+                    
+        # Fallback: Se não achar, pega o maior score da linha (exceto tecnico)
+        if capitao_idx == -1:
+            linha = [i for i, a in enumerate(team) if a.get('posicao_id') != 6]
+            if linha:
+                capitao_idx = max(linha, key=lambda i: team[i].get(score_col, 0))
+
+        team_display = [dict(a) for a in team]
+        if capitao_idx != -1:
+            team_display[capitao_idx]['apelido'] = str(team_display[capitao_idx].get('apelido', '')) + ' (C)'
+            # Pontos do capitão são dobrados no Cartola:
+            if 'predicao' in team_display[capitao_idx]:
+                team_display[capitao_idx]['predicao'] *= 2.0
+
+        df = pd.DataFrame(team_display)
 
         df['posicao_nome'] = df['posicao_id'].map(POSICOES)
 
         df = df.sort_values(['posicao_id', 'predicao'], ascending=[True, False])
 
-        # Colunas com fallback seguro
-        cols_saida = []
         col_map = {
             'apelido': 'Atleta',
             'posicao_nome': 'Posição',
             'clube_id': 'Clube',
             'preco': 'Preço (C$)',
-            'predicao': 'Predição',
-            'media': 'Média'
+            'predicao': 'Pred (Pts)',
+            'media': 'Média',
+            'mpv': 'MPV'
         }
+        
+        if getattr(self, 'fitness_col', 'predicao') != 'predicao':
+            col_map[self.fitness_col] = 'Score Otimização'
 
-        for col, nome in col_map.items():
-            if col in df.columns:
-                cols_saida.append(col)
-            else:
-                df[col] = 0
-                cols_saida.append(col)
-
+        ordem_exibicao = ['apelido', 'posicao_nome', 'clube_id', 'preco', 'predicao', getattr(self, 'fitness_col', 'predicao'), 'mpv', 'media']
+        
+        cols_saida = [c for c in ordem_exibicao if c in df.columns and c in col_map]
+        
         df = df[cols_saida]
         df.columns = [col_map[c] for c in cols_saida]
 
