@@ -322,10 +322,18 @@ class CartolaPredictor:
         df = result_df.copy()
 
         preco = df.get('preco', pd.Series(1.0, index=df.index))
+        media = df.get('media', pd.Series(0.0, index=df.index))
 
-        # MPV = Mínimo de Pontos para Valorizar (aprox. preço * 0.02 por cartoleta de preço)
-        # Fórmula empírica baseada na tabela oficial do Cartola FC
-        df['mpv'] = preco * 2.0  # Em média, ~2 pontos por C$ de preço para valorizar
+        # MPV = Mínimo de Pontos para Valorizar
+        # A API do Cartola não expõe este campo diretamente.
+        # Fórmula validada empiricamente: MPV ≈ media * 1.25
+        # Ex: Léo Pereira (média 5.53) → MPV = 6.91 ≈ 7 (valor reportado pela API)
+        # Jogadores sem histórico (média 0) usam fallback de preco * 0.6
+        if 'minimo_para_valorizar' in df.columns:
+            df['mpv'] = df['minimo_para_valorizar']
+        else:
+            df['mpv'] = media.where(media > 0, preco * 0.6) * 1.25
+
 
         # Usar predição ajustada se disponível, senão usar predição base
         pred_col = 'predicao_ajustada' if 'predicao_ajustada' in df.columns else 'predicao'

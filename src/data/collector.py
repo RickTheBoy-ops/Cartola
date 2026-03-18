@@ -49,9 +49,14 @@ class CartolaDataCollector:
             )
         """)
         
-        # Adicionar coluna status_id caso a tabela já exista sem ela originariamente
+        # Adicionar colunas caso a tabela já exista sem elas originariamente
         try:
             cursor.execute("ALTER TABLE atletas ADD COLUMN status_id INTEGER DEFAULT 7")
+        except sqlite3.OperationalError:
+            pass # Coluna já existe
+
+        try:
+            cursor.execute("ALTER TABLE atletas ADD COLUMN minimo_para_valorizar REAL DEFAULT 0.0")
         except sqlite3.OperationalError:
             pass # Coluna já existe
 
@@ -212,7 +217,8 @@ class CartolaDataCollector:
                     'variacao': atleta.get('variacao_num', 0),
                     'media': atleta.get('media_num', 0),
                     'jogos': atleta.get('jogos_num', 0),
-                    'minutos_jogados': atleta.get('minutos_jogados', 0)
+                    'minutos_jogados': atleta.get('minutos_jogados', 0),
+                    'minimo_para_valorizar': atleta.get('minimo_para_valorizar', 0.0)
                 })
 
             if invalidos > 0:
@@ -229,10 +235,10 @@ class CartolaDataCollector:
 
             for _, row in df.iterrows():
                 conn.execute("""
-                    INSERT OR REPLACE INTO atletas (atleta_id, nome, apelido, clube_id, posicao_id, status_id)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT OR REPLACE INTO atletas (atleta_id, nome, apelido, clube_id, posicao_id, status_id, minimo_para_valorizar)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (row['atleta_id'], row['nome'], row['apelido'],
-                      row['clube_id'], row['posicao_id'], row.get('status_id', 7)))
+                      row['clube_id'], row['posicao_id'], row.get('status_id', 7), row.get('minimo_para_valorizar', 0.0)))
 
             for _, row in df.iterrows():
                 try:

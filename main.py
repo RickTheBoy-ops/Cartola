@@ -275,6 +275,23 @@ def main():
     cols = [c for c in ['apelido', 'posicao_id', 'preco', 'score_final', 'selo_valorizacao'] if c in top.columns]
     logger.info(f"\n🏆 Top 10:\n{top[cols].to_string(index=False)}")
 
+    # ========== 6.5 SPECIALIST ANALYZER (V2.3) ==========
+    try:
+        from src.ml.specialist_logic import CartolaPrescalingChecklist
+        checklist = CartolaPrescalingChecklist(
+            rodada=rodada_atual,
+            budget=PATRIMONIO,
+            atletas_df=atletas_df,
+            partidas_df=partidas_df,
+            predicoes_df=predicoes_df,
+            modo=args.modo,
+        )
+        specialist_result = checklist.run()
+        logger.info(f"🏆 Capitão sugerido pelo Specialist: {specialist_result.get('recommended_captain', 'N/A')}")
+    except Exception as e:
+        logger.warning(f"⚠️ Specialist Analyzer indisponível: {e}")
+
+
     # ========== 7. OTIMIZAÇÃO PRINCIPAL ==========
     logger.info(f"\n🧬 [OTIMIZAÇÃO] Montando melhor time...")
 
