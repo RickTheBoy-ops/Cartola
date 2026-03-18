@@ -16,12 +16,15 @@ def mock_hist_and_partidas():
     })
     
     # Partidas basicas (Clube 10 joga em casa, Clube 20 fora)
+    # Cada clube aparece exatamente 1 vez por rodada
     df_partidas = pd.DataFrame({
-        'rodada': [1, 2, 3, 1, 2, 3],
-        'clube_casa_id': [10, 30, 10, 40, 20, 40],
-        'clube_visitante_id': [20, 10, 40, 20, 30, 20],
-        'placar_oficial_mandante': [2, 1, 3, 0, 1, 1],
-        'placar_oficial_visitante': [0, 1, 1, 0, 1, 2]
+        'rodada': [1, 2, 3],
+        'clube_casa_id': [10, 20, 10],
+        'clube_visitante_id': [20, 10, 20],
+        'placar_oficial_mandante': [2, 1, 3],
+        'placar_oficial_visitante': [0, 1, 1],
+        'aproveitamento_mandante': [0.6, 0.5, 0.7],
+        'aproveitamento_visitante': [0.4, 0.5, 0.3]
     })
     
     return df_hist, df_partidas
@@ -33,9 +36,9 @@ def test_engineer_base_features(mock_hist_and_partidas):
     df_feat = FeatureEngineer.engineer_all_features(df_hist, df_partidas)
     
     # Assert
-    assert 'media_ultimas_3' in df_feat.columns
+    assert 'pontos_media_3' in df_feat.columns
     assert 'mando_casa' in df_feat.columns
-    assert 'pontos_ewm' in df_feat.columns
+    assert 'pontos_ewm_3' in df_feat.columns
     
     # O dataframe resultante nao pode perder as colunas base pre-criadas
     assert 'atleta_id' in df_feat.columns
@@ -48,6 +51,6 @@ def test_engineer_media_sliding(mock_hist_and_partidas):
     # Atleta 1 rodada 3
     a1_r3 = df_feat[(df_feat['atleta_id'] == 1) & (df_feat['rodada'] == 3)].iloc[0]
     
-    # A media_ultimas_3 usa dados passados (Shift), entao deve conter a media das rodadas anteriores.
-    assert a1_r3['media_ultimas_3'] > 0
-    assert not pd.isna(a1_r3['media_ultimas_3'])
+    # A pontos_media_3 usa dados passados (Shift), entao deve conter a media das rodadas anteriores.
+    assert a1_r3['pontos_media_3'] > 0
+    assert not pd.isna(a1_r3['pontos_media_3'])

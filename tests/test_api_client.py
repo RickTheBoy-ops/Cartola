@@ -9,6 +9,9 @@ def mock_client():
     with patch('src.api.client.CartolaAPIClient.authenticate'):
         client = CartolaAPIClient(email="fake@email.com", password="fake")
         client.glb_token = "fake_token"
+        # Limpar cache para evitar interferência entre testes
+        from src.utils.cache import api_cache
+        api_cache._cache.clear()
         return client
 
 @patch('src.api.client.requests.Session.request')
@@ -16,6 +19,7 @@ def test_get_mercado_status_success(mock_request, mock_client):
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {"status": "aberto", "rodada_atual": 10}
+    mock_response.content = b'{"status": "aberto", "rodada_atual": 10}'
     mock_request.return_value = mock_response
 
     result = mock_client.get_mercado_status()
