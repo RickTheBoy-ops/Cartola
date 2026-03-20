@@ -431,8 +431,9 @@ with tab_analise:
                 progress.progress(55, "🧠 Treinando modelo ML...")
 
                 # ── 5. Treinar ─────────────────────────────────
-                from src.ml.predictor import CartolaPredictor
+                from src.ml.predictor import CartolaPredictor, ValorizacaoPredictor
                 predictor = CartolaPredictor(model_type=model_key)
+                val_predictor = ValorizacaoPredictor(model_type='gb')
 
                 dados_treino = historico_df[historico_df['rodada'] < rodada_atual] if len(historico_df) > 0 else pd.DataFrame()
                 can_train    = len(dados_treino) >= CartolaPredictor.HISTORICO_MINIMO
@@ -440,6 +441,15 @@ with tab_analise:
                 if can_train:
                     metrics = predictor.train(dados_treino, validate=True)
                     log(f"Modelo treinado — MAE: {metrics['mae']:.2f} | R²: {metrics['r2']:.3f}", "ok")
+
+                    # Treinar Valorização
+                    val_samples = FeatureEngineer.create_valorizacao_samples(historico_df)
+                    if len(val_samples) >= ValorizacaoPredictor.HISTORICO_MINIMO:
+                        val_metrics = val_predictor.train(val_samples, validate=False)
+                        log(f"Modelo Valorização — MAE: {val_metrics['mae']:.2f} | R²: {val_metrics['r2']:.3f}", "ok")
+                    else:
+                        log("Histórico insuficiente para Treinar Valorização.", "warn")
+
                 else:
                     log(f"Histórico insuficiente ({len(dados_treino)} registros). Usando heurística.", "warn")
 
@@ -469,9 +479,19 @@ with tab_analise:
                         predicoes_df = predictor.predict_with_confidence(dados_pred)
                         predicoes_df['predicao_ajustada'] = predicoes_df['predicao']
                         log("Predição base (features táticas indisponíveis)", "warn")
+
+                    # Prever valorização
+                    if val_predictor.is_trained:
+                        val_pred_df = val_predictor.predict(dados_pred)
+                        predicoes_df['esperanca_valorizacao'] = val_pred_df['esperanca_valorizacao']
+                        log("Predição de Valorização (Cartoletas) gerada", "ok")
+                    else:
+                        predicoes_df['esperanca_valorizacao'] = 0.0
+
                 else:
                     predicoes_df = CartolaPredictor.fallback_heuristica(atletas_df)
                     predicoes_df['predicao_ajustada'] = predicoes_df['predicao']
+                    predicoes_df['esperanca_valorizacao'] = 0.0
 
                 log(f"Predições geradas para {len(predicoes_df)} atletas", "ok")
                 progress.progress(82, "🧬 Otimizando time genético...")
@@ -482,11 +502,13 @@ with tab_analise:
                 predicoes_opt = predicoes_df.copy()
                 if 'predicao_std' not in predicoes_opt.columns:
                     predicoes_opt['predicao_std'] = 0.0
+                if 'esperanca_valorizacao' not in predicoes_opt.columns:
+                    predicoes_opt['esperanca_valorizacao'] = 0.0
                 score_col = 'predicao_ajustada' if 'predicao_ajustada' in predicoes_opt.columns else 'predicao'
                 predicoes_opt['predicao'] = predicoes_opt[score_col]
 
                 # Juntar para o formato que a factory e outras strategies esperam
-                df_for_opt = atletas_df.merge(predicoes_opt[['atleta_id', 'predicao', 'predicao_std']], on='atleta_id', how='left')
+                df_for_opt = atletas_df.merge(predicoes_opt[['atleta_id', 'predicao', 'predicao_std', 'esperanca_valorizacao']], on='atleta_id', how='left')
                 df_for_opt['mega_score'] = df_for_opt['predicao']
 
                 opt_config = {
@@ -619,8 +641,14 @@ with tab_time:
             media   = atleta.get('media', 0)
             boost   = atleta.get('bonus_oponente_fraco', 0)
             em_casa = atleta.get('mando_casa', 0)
+            val     = atleta.get('esperanca_valorizacao', 0)
 
             boost_tags = ""
+            if val > 0.5:
+                boost_tags += f'<span class="boost-tag" style="color:#00ff00; border-color:#00ff00">🤑 C$ +{val:.2f}</span> '
+            elif val < -0.5:
+                boost_tags += f'<span class="boost-tag" style="color:#ff4444; border-color:#ff4444">📉 C$ {val:.2f}</span> '
+            
             if boost > 0.7 and pos_id in [4, 5]:
                 boost_tags += '<span class="boost-tag">🎯 Defesa fraca</span> '
             if em_casa:

@@ -671,6 +671,34 @@ class FeatureEngineer:
 
         return df
 
+    @staticmethod
+    def create_valorizacao_samples(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Gera amostras para treinamento do modelo preditivo de variação de preço.
+        Pareia os status do atleta na rodada atual (t) com a variação de preço de (t+1).
+        
+        Equivalente ao passo '2. Criação das Amostras' do tutorial do Cartola.
+        """
+        if 'variacao' not in df.columns or 'atleta_id' not in df.columns or 'rodada' not in df.columns:
+            logger.warning("⚠️ Colunas 'variacao', 'atleta_id' ou 'rodada' ausentes para gerar amostras de valorização.")
+            return pd.DataFrame()
+
+        df_sorted = df.sort_values(by=['atleta_id', 'rodada']).copy()
+        
+        # Deslocar a coluna 'variacao' em 1 para cima, para prever a do próximo jogo
+        df_sorted['variacao_preco_prox'] = df_sorted.groupby('atleta_id')['variacao'].shift(-1)
+        
+        # Manter apenas as amostras onde sabemos o target
+        df_samples = df_sorted.dropna(subset=['variacao_preco_prox']).copy()
+        
+        # Filtrar atletas que não jogaram (quando tanto atual quanto prox variacao são 0)
+        df_samples = df_samples[(df_samples['variacao'] != 0) | (df_samples['variacao_preco_prox'] != 0)]
+        
+        # Log de quantas amostras conseguimos
+        logger.info(f"📈 Amostras de variação de preço geradas: {len(df_samples)} registros.")
+        
+        return df_samples
+
     @classmethod
     def engineer_all_features_v3(
         cls,
