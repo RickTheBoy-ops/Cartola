@@ -52,6 +52,7 @@ from src.ml.optimizer import GeneticTeamOptimizer
 from src.ml.pulp_optimizer import PuLPOptimizer
 from src.optimizer.factory import CartolaOptimizer
 from src.features.odds_integrator import OddsIntegrator
+from src.analysis.matchup_analyzer import MatchupAnalyzer
 from src.utils.validators import validar_mercado, validar_formacao, filtrar_atletas_com_jogo
 
 logging.basicConfig(
@@ -142,7 +143,7 @@ def score_h2h(h2h_df: pd.DataFrame, clube_id: int) -> float:
 
 
 # ==============================================================
-# CLASSIFICAÇÃO DE CONFRONTOS
+# CLASSIFICAÇÃO DE CONFRONTOS (LEGADO — APENAS LOG)
 # ==============================================================
 
 def classificar_confrontos(
@@ -188,61 +189,7 @@ def classificar_confrontos(
     return out
 
 
-# ==============================================================
-# CRUZAMENTO DE SCORES
-# ==============================================================
 
-def cruzar_scores(
-    predicoes_df: pd.DataFrame,
-    atletas_df: pd.DataFrame,
-    partidas_enriquecidas: pd.DataFrame,
-    hist_df: pd.DataFrame,
-    janela: int
-) -> pd.DataFrame:
-    """
-    score_cruzado = score_ML x mult_confronto x norm_h2h
-
-    Grupo A = 1.15  |  B = 1.00  |  C = 0.85
-    norm_h2h = 0.7 + aproveitamento_h2h * 0.6  (escala 0.7-1.3)
-    """
-    if predicoes_df.empty:
-        return predicoes_df
-
-    clube_tipo: Dict[int, str]   = {}
-    clube_h2h:  Dict[int, float] = {}
-    if not partidas_enriquecidas.empty:
-        for _, row in partidas_enriquecidas.iterrows():
-            ca   = int(row.get("clube_id_a", row.get("clube_casa_id", 0)))
-            cb   = int(row.get("clube_id_b", row.get("clube_visitante_id", 0)))
-            tipo = row.get("tipo_confronto", "B")
-            clube_tipo[ca] = tipo
-            clube_tipo[cb] = tipo
-            clube_h2h[ca]  = row.get("score_h2h_a", 0.5)
-            clube_h2h[cb]  = row.get("score_h2h_b", 0.5)
-
-    pred = predicoes_df.copy()
-    if "clube_id" not in pred.columns and "atleta_id" in pred.columns and "clube_id" in atletas_df.columns:
-        mapa = atletas_df.set_index("atleta_id")["clube_id"].to_dict()
-        pred["clube_id"] = pred["atleta_id"].map(mapa).fillna(0).astype(int)
-
-    pred["tipo_confronto"] = pred["clube_id"].map(lambda c: clube_tipo.get(int(c), "B"))
-    pred["score_h2h"]      = pred["clube_id"].map(lambda c: clube_h2h.get(int(c), 0.5))
-
-    mult_map = {"A": 1.15, "B": 1.0, "C": 0.85}
-    pred["mult_confronto"] = pred["tipo_confronto"].map(mult_map).fillna(1.0)
-
-    score_base_col = next(
-        (c for c in ["score_final", "predicao_ajustada", "predicao"] if c in pred.columns),
-        None
-    )
-    if score_base_col is None:
-        pred["score_cruzado"] = 0.0
-        return pred
-
-    norm_h2h = 0.7 + pred["score_h2h"] * 0.6
-    pred["score_cruzado"] = pred[score_base_col] * pred["mult_confronto"] * norm_h2h
-    logger.info(f"🔀 score_cruzado gerado para {len(pred)} atletas")
-    return pred
 
 
 # ==============================================================
@@ -292,11 +239,17 @@ def imprimir_escalacao_final(
             tipo_c  = r.get("tipo_confronto", "-")
             h2h_val = float(r.get("score_h2h", 0))
             mult    = float(r.get("mult_confronto", 1.0))
+            atk_mul = float(r.get("attack_multiplier", 1.0))
+            def_mul = float(r.get("defense_multiplier", 1.0))
+            win_p   = float(r.get("win_probability", 0.0))
+            cs_p    = float(r.get("clean_sheet_probability", 0.0))
             print(
                 f"   {nome:<24}  C${preco:>6.2f}  "
                 f"Score:{score:>7.2f}  "
                 f"Conf:{tipo_c}(x{mult:.2f})  "
-                f"H2H:{h2h_val:.2f}"
+                f"H2H:{h2h_val:.2f}  "
+                f"AtkMul:{atk_mul:.2f} DefMul:{def_mul:.2f} "
+                f"Win:{win_p:.0%} SG:{cs_p:.0%}"
             )
     print(f"\n{'━' * 72}")
     print(f"  ⚽ Pontos Preditos  : {stats.get('total_pontos_preditos', 0):.2f}")
@@ -415,9 +368,9 @@ def main():
     logger.info(f"✅ {len(atletas_df)} atletas com jogo confirmado")
 
     # ----------------------------------------------------------
-    # [4/12] CLASSIFICAÇÃO DE CONFRONTOS
+    # [4/12] CLASSIFICAÇÃO DE CONFRONTOS (LOG LEGADO)
     # ----------------------------------------------------------
-    logger.info("🔍 [4/12] Classificando confrontos (Grupo A/B/C)...")
+    logger.info("🔍 [4/12] Classificando confrontos (Grupo A/B/C) para log...")
     partidas_rodada = (
         partidas_df[partidas_df['rodada'] == rodada_atual].copy()
         if not partidas_df.empty else pd.DataFrame()
@@ -475,9 +428,9 @@ def main():
         logger.warning(f"⚠️  Histórico insuficiente ({len(dados_treino)} reg) — usando heurística")
 
     # ----------------------------------------------------------
-    # [8/12] PREDIÇÕES + CRUZAMENTO H2H
+    # [8/12] PREDIÇÕES + MATCHUP ANALYZER
     # ----------------------------------------------------------
-    logger.info(f"🎯 [8/12] Predições cruzadas (ML + H2H últimos {JANELA})...")
+    logger.info(f"🎯 [8/12] Predições cruzadas (ML + MatchupAnalyzer)...")
 
     if can_train and predictor.is_trained:
         ultimos = (
@@ -510,16 +463,46 @@ def main():
 
     logger.info(f"⚖️  Modo {args.modo.upper()} aplicado")
 
-    # Cruzamento H2H
-    predicoes_df = cruzar_scores(
-        predicoes_df, atletas_df, partidas_enriquecidas, hist_h2h_df, JANELA
-    )
-    ranking_col = 'score_cruzado' if 'score_cruzado' in predicoes_df.columns else 'score_final'
+    # MatchupAnalyzer: multipliers por clube
+    matchups_df = pd.DataFrame()
+    try:
+        odds_por_clube = None
+        if 'prob_gol' in atletas_df.columns and 'prob_sg' in atletas_df.columns:
+            odds_por_clube = (
+                atletas_df
+                .groupby('clube_id')[['prob_gol', 'prob_sg']]
+                .mean()
+                .reset_index()
+            )
+
+        matchup = MatchupAnalyzer(
+            rodada=rodada_atual,
+            partidas_df=partidas_df,
+            historico_partidas_df=partidas_df,
+            odds_por_clube=odds_por_clube,
+            janela_recente=JANELA,
+        )
+        matchups_df = matchup.build_team_matchups()
+        if not matchups_df.empty:
+            predicoes_df = MatchupAnalyzer.apply_to_predictions(predicoes_df, matchups_df)
+            ranking_col = 'score_cruzado'
+            logger.info("✅ MatchupAnalyzer aplicado com sucesso")
+        else:
+            ranking_col = 'score_final'
+            predicoes_df['score_cruzado'] = predicoes_df['score_final']
+            logger.warning("⚠️ MatchupAnalyzer retornou vazio, usando score_final como score_cruzado")
+    except Exception as e:
+        logger.error(f"❌ Erro no MatchupAnalyzer: {e}\\n{traceback.format_exc()}")
+        ranking_col = 'score_final'
+        predicoes_df['score_cruzado'] = predicoes_df['score_final']
+
     predicoes_df['fitness_score'] = predicoes_df[ranking_col]
 
     top10 = predicoes_df.nlargest(10, ranking_col)
-    cols_top = [c for c in ['apelido','posicao_id','preco',ranking_col,'tipo_confronto','score_h2h']
-                if c in top10.columns]
+    cols_top = [c for c in [
+        'apelido','posicao_id','preco',ranking_col,
+        'attack_multiplier','defense_multiplier','win_probability','clean_sheet_probability'
+    ] if c in top10.columns]
     logger.info(f"\n🏆 Top 10 pré-otimização:\n{top10[cols_top].to_string(index=False)}")
 
     # ----------------------------------------------------------
@@ -539,6 +522,7 @@ def main():
             ),
             predicoes_df=predicoes_df,
             modo=args.modo,
+            matchups_df=matchups_df,
         )
         specialist_result = checklist.run()
         logger.info(
@@ -569,11 +553,20 @@ def main():
 
     if PuLPOptimizer.disponivel():
         try:
-            # Juntar atletas com scores cruzados
+            merge_cols = [
+                'atleta_id',
+                'score_cruzado',
+                'score_final',
+                'attack_multiplier',
+                'defense_multiplier',
+                'win_probability',
+                'clean_sheet_probability',
+            ]
+            merge_cols = [c for c in merge_cols if c in pred_opt.columns]
             atletas_enriquecidos = atletas_df.merge(
-                pred_opt[['atleta_id','score_cruzado','score_final','tipo_confronto',
-                           'score_h2h','mult_confronto']].drop_duplicates('atleta_id'),
-                on='atleta_id', how='left'
+                pred_opt[merge_cols].drop_duplicates('atleta_id'),
+                on='atleta_id',
+                how='left',
             )
             pulp_opt = PuLPOptimizer(
                 atletas_df=atletas_enriquecidos,
@@ -615,10 +608,13 @@ def main():
         genetic_team = gen_opt.format_team_output(best_team_raw)
 
         # Enriquecer com scores cruzados
-        extra = [c for c in
-            ['atleta_id','tipo_confronto','score_h2h','score_cruzado','mult_confronto',
-             'selo_valorizacao']
-            if c in predicoes_df.columns]
+        extra = [c for c in [
+            'atleta_id',
+            'score_cruzado',
+            'selo_valorizacao',
+            'attack_multiplier','defense_multiplier',
+            'win_probability','clean_sheet_probability',
+        ] if c in predicoes_df.columns]
         if extra and 'atleta_id' in genetic_team.columns:
             genetic_team = genetic_team.merge(
                 predicoes_df[extra], on='atleta_id', how='left'

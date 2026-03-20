@@ -43,6 +43,7 @@ class CartolaPrescalingChecklist:
         partidas_df: pd.DataFrame,
         predicoes_df: pd.DataFrame,
         modo: str = "valorizar",
+        matchups_df: Optional[pd.DataFrame] = None,
     ):
         self.rodada = rodada
         self.budget = budget
@@ -50,6 +51,7 @@ class CartolaPrescalingChecklist:
         self.partidas = partidas_df.copy()
         self.predicoes = predicoes_df.copy()
         self.modo = modo              # valorizar / pontuar / equilibrado
+        self.matchups = matchups_df.copy() if matchups_df is not None else None
         self.report_lines: List[str] = []
 
     # ------------------------------------------------------------------
@@ -202,26 +204,63 @@ class CartolaPrescalingChecklist:
         self._log("🔍 ETAPA 4: CONTEXTO E CONFRONTO")
         self._log(f"{'='*55}")
 
-        rodada_partidas = self.partidas[self.partidas["rodada"] == self.rodada]
-        if len(rodada_partidas) == 0:
-            self._log("   ⚠️ Sem dados de confronto para esta rodada.")
-            return {"step": 4, "name": "Contexto", "findings": [], "confidence": STEP_CONFIDENCE[3]}
+        findings: List[str] = []
 
-        for _, p in rodada_partidas.iterrows():
-            casa_id = p.get("clube_casa_id", "?")
-            visita_id = p.get("clube_visitante_id", "?")
-            aprov_casa = p.get("aproveitamento_mandante", 0.5)
-            aprov_vis = p.get("aproveitamento_visitante", 0.5)
-            favorito = "Casa" if aprov_casa >= aprov_vis else "Visitante"
-            self._log(
-                f"   {casa_id} vs {visita_id} — Aprov Casa:{aprov_casa:.0%} "
-                f"Visita:{aprov_vis:.0%} → Favorito: {favorito}"
-            )
+        # Preferir MatchupAnalyzer se disponível
+        if getattr(self, "matchups", None) is not None and not self.matchups.empty:
+            m = self.matchups[self.matchups["rodada"] == self.rodada].copy()
+            if m.empty:
+                self._log("   ⚠️ Sem dados de matchup para esta rodada.")
+            else:
+                self._log("   Contexto por confronto (prob vitória / prob SG):")
+                mandantes = m[m["mando_casa"] == 1]
+                for _, row in mandantes.iterrows():
+                    casa_id = int(row["clube_id"])
+                    visita_id = int(row["adversario_id"])
+                    win_casa = float(row["win_probability"])
+                    cs_casa = float(row["clean_sheet_probability"])
+
+                    mask_vis = (
+                        (m["clube_id"] == visita_id)
+                        & (m["adversario_id"] == casa_id)
+                        & (m["rodada"] == self.rodada)
+                    )
+                    if mask_vis.any():
+                        vis_row = m[mask_vis].iloc[0]
+                        win_vis = float(vis_row["win_probability"])
+                        cs_vis = float(vis_row["clean_sheet_probability"])
+                    else:
+                        win_vis = 0.5
+                        cs_vis = 0.3
+
+                    self._log(
+                        f"   {casa_id} vs {visita_id} — "
+                        f"Win: {win_casa:.0%} x {win_vis:.0%} | "
+                        f"SG: {cs_casa:.0%} x {cs_vis:.0%}"
+                    )
+
+                findings.append(f"{len(mandantes)} confrontos analisados via MatchupAnalyzer")
+        else:
+            rodada_partidas = self.partidas[self.partidas["rodada"] == self.rodada]
+            if len(rodada_partidas) == 0:
+                self._log("   ⚠️ Sem dados de confronto para esta rodada.")
+            else:
+                for _, p in rodada_partidas.iterrows():
+                    casa_id = p.get("clube_casa_id", "?")
+                    visita_id = p.get("clube_visitante_id", "?")
+                    aprov_casa = p.get("aproveitamento_mandante", 0.5)
+                    aprov_vis = p.get("aproveitamento_visitante", 0.5)
+                    favorito = "Casa" if aprov_casa >= aprov_vis else "Visitante"
+                    self._log(
+                        f"   {casa_id} vs {visita_id} — Aprov Casa:{aprov_casa:.0%} "
+                        f"Visita:{aprov_vis:.0%} → Favorito: {favorito}"
+                    )
+                findings.append(f"{len(rodada_partidas)} confrontos analisados via aproveitamento")
 
         return {
             "step": 4,
             "name": "Contexto",
-            "findings": [f"{len(rodada_partidas)} confrontos analisados"],
+            "findings": findings,
             "confidence": STEP_CONFIDENCE[3],
         }
 
