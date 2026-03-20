@@ -1,242 +1,201 @@
 """
-Módulo de Validação de Dados para Cartola FC Optimizer
-- Validação de atletas, formação, mercado
-- Filtragem de atletas inválidos (lesionados, suspensos)
+Validadores do sistema Cartola FC.
+
+Responsabilidade: validar dados brutos antes que entrem no pipeline.
+Não deve conter lógica de negócio (cálculo de xpoints, otimização, etc.).
 """
 
 import logging
 from typing import Dict, List, Optional
+
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Status dos atletas na API do Cartola
-STATUS_ATLETA = {
-    2: 'Dúvida',
-    3: 'Suspenso',
-    5: 'Contundido',
-    6: 'Nulo',
-    7: 'Provável',
-}
+# Status que permitem escalação
+STATUS_PROVAVEL = 7
+STATUS_DUVIDA   = [2, 3, 5]   # Dúvida, Contundido, Suspenso
 
-# Status válidos para escalação
-STATUS_VALIDOS = {7}  # Apenas "Provável"
-
-# Posições válidas
-POSICOES_VALIDAS = {1, 2, 3, 4, 5, 6}
-
-# Campos obrigatórios para um atleta (na raw API response)
-CAMPOS_OBRIGATORIOS_ATLETA = ['atleta_id', 'posicao_id']
+# Formações válidas
+FORMACOES_VALIDAS = {'3-4-3','3-5-2','4-3-3','4-4-2','4-5-1','5-3-2','5-4-1'}
 
 
-def validar_mercado(status_data: Dict) -> Dict:
-    """
-    Valida status do mercado e retorna informações úteis.
-    Retorna dict com 'valido', 'rodada_atual', 'mensagem'.
-    """
-    rodada = status_data.get('rodada_atual')
-    status_mercado = status_data.get('status_mercado')
-
-    if rodada is None:
-        return {
-            'valido': False,
-            'rodada_atual': None,
-            'mensagem': 'Rodada atual não encontrada na resposta da API'
-        }
-
-    # status_mercado: 1 = aberto, 2 = fechado
-    mercado_aberto = status_mercado == 1
-
-    return {
-        'valido': True,
-        'rodada_atual': rodada,
-        'mercado_aberto': mercado_aberto,
-        'mensagem': f"Rodada {rodada} - Mercado {'ABERTO' if mercado_aberto else 'FECHADO'}"
-    }
-
+# ==============================================================
+# ATLETA
+# ==============================================================
 
 def validar_atleta(atleta: Dict) -> bool:
-    """Valida se um atleta tem os campos mínimos necessários"""
-    for campo in CAMPOS_OBRIGATORIOS_ATLETA:
-        if campo not in atleta or atleta[campo] is None:
-            return False
-
-    # Posição deve ser válida
-    if atleta.get('posicao_id') not in POSICOES_VALIDAS:
-        return False
-
-    # Preço deve ser positivo
-    if atleta.get('preco', atleta.get('preco_num', 0)) <= 0:
-        return False
-
-    return True
-
-
-def filtrar_atletas_validos(atletas_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Filtra DataFrame de atletas removendo:
-    - Atletas sem preço
-    - Atletas com posição inválida
-    - Atletas com status inativo (lesionados, suspensos, etc.)
+    Valida se o atleta tem os campos obrigatórios mínimos.
+    NÃO filtra por status aqui — isso é feito em filtrar_atletas_validos.
     """
-    if len(atletas_df) == 0:
-        return atletas_df.copy()
+    if not isinstance(atleta, dict):
+        return False
+    return bool(atleta.get('atleta_id')) and bool(atleta.get('posicao_id'))
 
-    df = atletas_df.copy()
-    
-    # 1. Normalizar nomes das colunas da API se necessário
-    col_mapping = {}
-    if 'preco_num' in df.columns and 'preco' not in df.columns:
-        col_mapping['preco_num'] = 'preco'
-    if 'media_num' in df.columns and 'media' not in df.columns:
-        col_mapping['media_num'] = 'media'
-    if 'variacao_num' in df.columns and 'variacao' not in df.columns:
-        col_mapping['variacao_num'] = 'variacao'
-        
-    if col_mapping:
-        df = df.rename(columns=col_mapping)
 
-    # Abortar se preco ainda no existir
-    if 'preco' not in df.columns:
+def filtrar_atletas_validos(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Remove atletas inválidos para escalação:
+      - Sem atleta_id ou posicao_id
+      - status_id != STATUS_PROVAVEL (7)
+      - Preço zero ou negativo
+
+    Esta é a trava estrutural: jogadores duvidosos/suspensos/contundidos
+    nunca chegam ao otimizador.
+    """
+    if df.empty:
         return df
 
-    tam_original = len(df)
+    inicial = len(df)
 
-    # Filtrar por preço positivo
-    df = df[df['preco'] > 0]
+    # Campos obrigatórios
+    df = df.dropna(subset=['atleta_id', 'posicao_id'])
 
-    # Filtrar por posição válida
-    df = df[df['posicao_id'].isin(POSICOES_VALIDAS)]
-
-    # Filtrar por status (se existir a coluna)
+    # Trava de status: só status_id == 7 (Provável)
     if 'status_id' in df.columns:
-        antes = len(df)
-        df = df[df['status_id'].isin(STATUS_VALIDOS)]
-        removidos_status = antes - len(df)
+        antes_status = len(df)
+        df = df[df['status_id'] == STATUS_PROVAVEL]
+        removidos_status = antes_status - len(df)
         if removidos_status > 0:
-            logger.info(f"Removidos {removidos_status} atletas com status inválido (lesão/suspensão/dúvida)")
+            logger.info(
+                f"🧹 {removidos_status} atletas removidos (status != {STATUS_PROVAVEL}: "
+                f"dúvida/contundido/suspenso)"
+            )
 
-    removidos_total = tam_original - len(df)
-    if removidos_total > 0:
-        logger.info(f"Validação: {removidos_total} atletas removidos, {len(df)} válidos restantes")
+    # Preço mínimo
+    if 'preco' in df.columns:
+        df = df[df['preco'] > 0]
 
+    total_removidos = inicial - len(df)
+    logger.info(
+        f"✅ filtrar_atletas_validos: {len(df)} válidos | "
+        f"{total_removidos} removidos do total de {inicial}"
+    )
     return df.reset_index(drop=True)
 
 
+# ==============================================================
+# MERCADO
+# ==============================================================
+
+def validar_mercado(mercado: Dict) -> Dict:
+    """
+    Valida status do mercado.
+    Retorna dict com 'valido', 'rodada_atual' e 'mensagem'.
+    """
+    if not mercado:
+        return {'valido': False, 'rodada_atual': 0, 'mensagem': 'Mercado não retornou dados'}
+
+    rodada = mercado.get('rodada_atual', 0)
+    status = mercado.get('status_mercado', 0)
+    nome   = mercado.get('nome_status', 'Desconhecido')
+
+    # Status 1=Fechado, 2=Atualizando, 4=Manutenção, 6=Aberto, 7=Parcial...
+    if status in [4]:
+        return {
+            'valido': False,
+            'rodada_atual': rodada,
+            'mensagem': f'Mercado em manutenção (status={status}: {nome})'
+        }
+
+    return {
+        'valido':       True,
+        'rodada_atual': int(rodada),
+        'mensagem':     f'Rodada {rodada} | Status: {nome} (id={status})'
+    }
+
+
+# ==============================================================
+# FORMAÇÃO
+# ==============================================================
+
 def validar_formacao(formacao: str) -> bool:
-    """Valida se a formação é reconhecida"""
-    formacoes_validas = {'3-4-3', '3-5-2', '4-3-3', '4-4-2', '4-5-1', '5-3-2', '5-4-1'}
-    return formacao in formacoes_validas
+    """Valida se a formação é suportada pelo sistema."""
+    ok = formacao in FORMACOES_VALIDAS
+    if not ok:
+        logger.warning(
+            f"❌ Formação '{formacao}' inválida. Válidas: {sorted(FORMACOES_VALIDAS)}"
+        )
+    return ok
 
 
-def validar_historico_minimo(df: pd.DataFrame, minimo: int = 30) -> bool:
-    """Verifica se há histórico mínimo suficiente para treinar ML"""
-    if df is None or len(df) == 0:
-        return False
-    return len(df) >= minimo
+# ==============================================================
+# TIME FINALIZADO
+# ==============================================================
 
-
-def validar_time(team: List[Dict], patrimonio: float, formacao_nome: str) -> Dict:
+def validar_time(
+    team: list,
+    patrimonio: float,
+    formacao: str,
+    max_clube: int = 3
+) -> Dict:
     """
-    Valida um time gerado pelo otimizador.
-    Retorna dict com 'valido', 'erros'.
+    Valida o time final antes de exibir a escalação.
+    Retorna {'valido': bool, 'erros': list[str], 'alertas': list[str]}
     """
-    erros = []
+    erros   = []
+    alertas = []
 
     if not team:
-        return {'valido': False, 'erros': ['Time vazio']}
+        return {'valido': False, 'erros': ['Time vazio'], 'alertas': []}
 
-    # Verificar preço total
     total_preco = sum(a.get('preco', 0) for a in team)
     if total_preco > patrimonio:
-        erros.append(f"Preço total (C$ {total_preco:.2f}) excede patrimônio (C$ {patrimonio:.2f})")
+        erros.append(f'Custo C${total_preco:.2f} excede orçamento C${patrimonio:.2f}')
 
     # Verificar duplicatas
     ids = [a.get('atleta_id') for a in team]
     if len(ids) != len(set(ids)):
-        erros.append("Time contém jogadores duplicados")
+        erros.append('Time com atletas duplicados!')
 
-    # Quantidade total de jogadores (deve ser 12)
-    if len(team) != 12:
-        erros.append(f"Time com {len(team)} jogadores (esperado: 12)")
+    # Verificar status de todos (nenhum deve ter passado com status != 7)
+    invalidos = [a.get('apelido','?') for a in team if int(a.get('status_id', 7)) != STATUS_PROVAVEL]
+    if invalidos:
+        erros.append(f'Atletas não prováveis no time: {invalidos}')
+
+    # Concentração por clube
+    from collections import Counter
+    por_clube = Counter(a.get('clube_id') for a in team)
+    for clube, cnt in por_clube.items():
+        if cnt > max_clube:
+            alertas.append(f'Clube {clube}: {cnt} atletas (máx recomendado: {max_clube})')
 
     return {
-        'valido': len(erros) == 0,
-        'erros': erros,
-        'total_preco': total_preco,
-        'total_jogadores': len(team)
+        'valido':   len(erros) == 0,
+        'erros':    erros,
+        'alertas':  alertas,
     }
 
 
-def validar_partida_confirmada(clube_id: int, rodada: int, partidas_df) -> bool:
-    """
-    Verifica se um clube tem partida confirmada em uma determinada rodada.
-    Retorna True se existe jogo, False caso contrário.
-
-    Args:
-        clube_id: ID do clube do atleta
-        rodada: Número da rodada a verificar
-        partidas_df: DataFrame com colunas [rodada, clube_casa_id, clube_visitante_id]
-    """
-    if partidas_df is None or len(partidas_df) == 0:
-        logger.debug(f"Sem dados de partidas para validar clube {clube_id} na rodada {rodada}")
-        return True  # Sem dados → assumir que joga (não bloquear)
-
-    colunas_necessarias = {'rodada', 'clube_casa_id', 'clube_visitante_id'}
-    if not colunas_necessarias.issubset(partidas_df.columns):
-        return True  # Estrutura incompatível → não bloquear
-
-    partida = partidas_df[
-        (partidas_df['rodada'] == rodada) &
-        (
-            (partidas_df['clube_casa_id'] == clube_id) |
-            (partidas_df['clube_visitante_id'] == clube_id)
-        )
-    ]
-
-    if len(partida) == 0:
-        logger.warning(
-            f"⚠️ Clube {clube_id} não tem partida confirmada na rodada {rodada}. "
-            f"Atletas deste clube serão ignorados."
-        )
-        return False
-
-    return True
-
+# ==============================================================
+# FILTROS AUXILIARES
+# ==============================================================
 
 def filtrar_atletas_com_jogo(
-    atletas_df,
+    atletas_df: pd.DataFrame,
     rodada: int,
-    partidas_df,
-) -> 'pd.DataFrame':
+    partidas_df: pd.DataFrame
+) -> pd.DataFrame:
     """
-    Remove atletas cujo clube não tem partida confirmada na rodada especificada.
-    Retorna DataFrame filtrado.
+    Remove atletas cujo clube não tem jogo confirmado na rodada.
     """
-    import pandas as pd
-
-    if 'clube_id' not in atletas_df.columns:
+    if partidas_df.empty:
         return atletas_df
 
-    if partidas_df is None or len(partidas_df) == 0:
-        return atletas_df
-
+    partidas_rodada = partidas_df[partidas_df['rodada'] == rodada]
     clubes_com_jogo = set()
 
-    # Mandantes
-    if 'clube_casa_id' in partidas_df.columns:
-        rodada_partidas = partidas_df[partidas_df['rodada'] == rodada]
-        clubes_com_jogo.update(rodada_partidas['clube_casa_id'].dropna().astype(int))
-        clubes_com_jogo.update(rodada_partidas['clube_visitante_id'].dropna().astype(int))
+    for col in ['clube_casa_id', 'clube_visitante_id', 'clube_id_a', 'clube_id_b']:
+        if col in partidas_rodada.columns:
+            clubes_com_jogo.update(partidas_rodada[col].dropna().astype(int).tolist())
 
-    antes = len(atletas_df)
-    filtrado = atletas_df[atletas_df['clube_id'].isin(clubes_com_jogo)].copy()
-    removidos = antes - len(filtrado)
+    if not clubes_com_jogo:
+        logger.warning("⚠️  Nenhum clube com jogo confirmado. Retornando todos os atletas.")
+        return atletas_df
 
-    if removidos > 0:
-        logger.warning(
-            f"⚠️ {removidos} atletas removidos por clube sem partida na rodada {rodada}. "
-            f"{len(filtrado)} atletas mantidos."
-        )
-
+    filtrado = atletas_df[atletas_df['clube_id'].isin(clubes_com_jogo)]
+    removidos = len(atletas_df) - len(filtrado)
+    if removidos:
+        logger.info(f"🔍 {removidos} atletas sem jogo confirmado removidos")
     return filtrado.reset_index(drop=True)
