@@ -463,6 +463,36 @@ def main():
 
     logger.info(f"⚖️  Modo {args.modo.upper()} aplicado")
 
+    # Garante que predicoes_df tenha clube_id e posicao_id
+    if 'clube_id' not in predicoes_df.columns \
+            and 'atleta_id' in predicoes_df.columns \
+            and 'clube_id' in atletas_df.columns:
+        mapa_clube = (
+            atletas_df
+            .set_index('atleta_id')['clube_id']
+            .to_dict()
+        )
+        predicoes_df['clube_id'] = (
+            predicoes_df['atleta_id']
+            .map(mapa_clube)
+            .fillna(0)
+            .astype(int)
+        )
+    if 'posicao_id' not in predicoes_df.columns \
+            and 'atleta_id' in predicoes_df.columns \
+            and 'posicao_id' in atletas_df.columns:
+        mapa_pos = (
+            atletas_df
+            .set_index('atleta_id')['posicao_id']
+            .to_dict()
+        )
+        predicoes_df['posicao_id'] = (
+            predicoes_df['atleta_id']
+            .map(mapa_pos)
+            .fillna(0)
+            .astype(int)
+        )
+
     # MatchupAnalyzer: multipliers por clube
     matchups_df = pd.DataFrame()
     try:
@@ -644,7 +674,12 @@ def main():
 
     if genetic_team is not None and not genetic_team.empty:
         gs = dict(genetic_stats)
-        gs['patrimonio_usado_pct'] = gs.get('patrimonio_usado', 0)
+        # Calcula % do patrimônio usado a partir do preço total
+        total_preco_gen = gs.get('total_preco', 0)
+        gs['patrimonio_usado_pct'] = (
+            (total_preco_gen / PATRIMONIO) * 100
+            if PATRIMONIO else 0
+        )
         imprimir_escalacao_final(genetic_team, gs, specialist_result, PATRIMONIO, metodo="Genético")
         salvar_xlsx(genetic_team, output_dir, rodada_atual, "genetico")
 
