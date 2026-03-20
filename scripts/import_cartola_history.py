@@ -31,13 +31,7 @@ def find_year_dirs(cartola_root: Path) -> List[Path]:
 
 
 def load_partidas_year(year_dir: Path) -> pd.DataFrame:
-    """
-    Adapte este loader conforme o esquema real do caRtola.
-    Aqui assumo um CSV 'partidas.csv' com colunas mínimas:
-      rodada, clube_casa_id, clube_visitante_id,
-      placar_oficial_mandante, placar_oficial_visitante, data
-    """
-    csv_candidates = [f for f in year_dir.glob("**/*partidas*.csv")]
+    csv_candidates = [f for f in year_dir.glob("*partidas.csv") if "ids.csv" not in f.name]
     if not csv_candidates:
         logger.warning(f"Nenhum arquivo de partidas encontrado em {year_dir}")
         return pd.DataFrame()
@@ -54,38 +48,40 @@ def load_partidas_year(year_dir: Path) -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.concat(df_list, ignore_index=True)
 
-    # Normalizar campos básicos (ajuste conforme nomes reais)
     col_map = {
-        "rodada": "rodada",
-        "clube_casa_id": "clube_casa_id",
-        "clube_visitante_id": "clube_visitante_id",
-        "placar_mandante": "placar_oficial_mandante",
-        "placar_visitante": "placar_oficial_visitante",
+        "round": "rodada",
+        "home_team": "clube_casa_id",
+        "away_team": "clube_visitante_id",
     }
     for src, dst in col_map.items():
         if src in df.columns and dst not in df.columns:
             df[dst] = df[src]
 
-    keep_cols = [
-        "rodada",
-        "clube_casa_id",
-        "clube_visitante_id",
-        "placar_oficial_mandante",
-        "placar_oficial_visitante",
-    ]
-    keep_cols = [c for c in keep_cols if c in df.columns]
+    # Hack para score '1 x 0' -> separar em placar_oficial_mandante e placar_oficial_visitante
+    if "score" in df.columns and "placar_oficial_mandante" not in df.columns:
+        try:
+            split_scores = df["score"].str.split(" x ", expand=True)
+            if split_scores.shape[1] == 2:
+                df["placar_oficial_mandante"] = pd.to_numeric(split_scores[0], errors='coerce').fillna(0)
+                df["placar_oficial_visitante"] = pd.to_numeric(split_scores[1], errors='coerce').fillna(0)
+        except:
+            pass
+
+    for req in ["rodada", "clube_casa_id", "clube_visitante_id", "placar_oficial_mandante", "placar_oficial_visitante"]:
+        if req not in df.columns:
+            df[req] = 0
+
+    keep_cols = ["rodada", "clube_casa_id", "clube_visitante_id", "placar_oficial_mandante", "placar_oficial_visitante"]
     df = df[keep_cols].copy()
-    df["rodada"] = df["rodada"].astype(int)
+    
+    df["rodada"] = pd.to_numeric(df["rodada"], errors='coerce').fillna(0).astype(int)
+    
     return df
 
 
 def load_pontuacoes_year(year_dir: Path) -> pd.DataFrame:
-    """
-    Adapte este loader conforme o esquema real do caRtola.
-    Assumimos um CSV 'pontuacoes.csv' com colunas:
-      rodada, atleta_id, pontos, clube_id
-    """
-    csv_candidates = [f for f in year_dir.glob("**/*pontuac*.csv")]
+    # 2014-2017: *_scouts_raw.csv; 2018+: rodada-*.csv
+    csv_candidates = list(year_dir.glob("*scouts_raw.csv")) + list(year_dir.glob("rodada-*.csv"))
     if not csv_candidates:
         logger.warning(f"Nenhum arquivo de pontuações encontrado em {year_dir}")
         return pd.DataFrame()
@@ -93,8 +89,22 @@ def load_pontuacoes_year(year_dir: Path) -> pd.DataFrame:
     df_list = []
     for f in csv_candidates:
         try:
-            df_list.append(pd.read_csv(f))
-            logger.info(f"Carregado {f}")
+            df_temp = pd.read_csv(f)
+            # Clean up column names dynamically
+            df_temp.columns = [c.replace("atletas.", "").replace("atleta.", "") for c in df_temp.columns]
+            
+            if "rodada_id" in df_temp.columns and "rodada" not in df_temp.columns:
+                df_temp["rodada"] = df_temp["rodada_id"]
+                
+            # If rodada is missing but we're parsing rodada-X.csv
+            if "rodada" not in df_temp.columns and f.name.startswith("rodada-"):
+                try:
+                    df_temp["rodada"] = int(f.stem.split("-")[1])
+                except:
+                    pass
+            
+            df_list.append(df_temp)
+            logger.info(f"Carregado {f} com {len(df_temp)} registros")
         except Exception as e:
             logger.warning(f"Falha lendo {f}: {e}")
 
@@ -103,29 +113,52 @@ def load_pontuacoes_year(year_dir: Path) -> pd.DataFrame:
     df = pd.concat(df_list, ignore_index=True)
 
     col_map = {
-        "rodada": "rodada",
-        "atleta_id": "atleta_id",
+        "Rodada": "rodada",
+        "AtletaID": "atleta_id",
+        "Pontos": "pontos",
         "pontos_num": "pontos",
-        "pontos": "pontos",
-        "clube_id": "clube_id",
+        "ClubeID": "clube_id",
     }
+    
     for src, dst in col_map.items():
         if src in df.columns and dst not in df.columns:
             df[dst] = df[src]
 
+    for req in ["rodada", "atleta_id", "pontos", "clube_id"]:
+        if req not in df.columns:
+            df[req] = 0
+
     keep_cols = ["rodada", "atleta_id", "pontos", "clube_id"]
-    keep_cols = [c for c in keep_cols if c in df.columns]
     df = df[keep_cols].copy()
-    df["rodada"] = df["rodada"].astype(int)
-    df["atleta_id"] = df["atleta_id"].astype(int)
+    
+    df["rodada"] = pd.to_numeric(df["rodada"], errors='coerce').fillna(0).astype(int)
+    df["atleta_id"] = pd.to_numeric(df["atleta_id"], errors='coerce').fillna(0).astype(int)
+    df["pontos"] = pd.to_numeric(df["pontos"], errors='coerce').fillna(0.0).astype(float)
+    df["clube_id"] = pd.to_numeric(df["clube_id"], errors='coerce').fillna(0).astype(int)
+    
     return df
 
 
 def upsert_dataframe(df: pd.DataFrame, table: str, conn: sqlite3.Connection, if_exists: str = "append"):
     if df.empty:
         return
-    logger.info(f"Gravando {len(df)} linhas em {table} ({if_exists})")
-    df.to_sql(table, conn, if_exists=if_exists, index=False)
+        
+    cursor = conn.cursor()
+    cursor.execute(f"PRAGMA table_info({table})")
+    valid_cols = [row[1] for row in cursor.fetchall()]
+    
+    cols_to_keep = [c for c in df.columns if c in valid_cols]
+    df_clean = df[cols_to_keep].copy()
+    
+    logger.info(f"Gravando {len(df_clean)} linhas em {table} ({if_exists} with IGNORE)")
+    
+    temp_table = f"temp_{table}"
+    df_clean.to_sql(temp_table, conn, if_exists="replace", index=False)
+    
+    cols_str = ", ".join(cols_to_keep)
+    cursor.execute(f"INSERT OR IGNORE INTO {table} ({cols_str}) SELECT {cols_str} FROM {temp_table}")
+    cursor.execute(f"DROP TABLE {temp_table}")
+    conn.commit()
 
 
 def main():
