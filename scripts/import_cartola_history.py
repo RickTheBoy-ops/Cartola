@@ -75,7 +75,7 @@ def load_partidas_year(year_dir: Path) -> pd.DataFrame:
     df = df[keep_cols].copy()
     
     df["rodada"] = pd.to_numeric(df["rodada"], errors='coerce').fillna(0).astype(int)
-    
+    df = df[df["rodada"] > 0].copy()
     return df
 
 
@@ -136,6 +136,7 @@ def load_pontuacoes_year(year_dir: Path) -> pd.DataFrame:
     df["pontos"] = pd.to_numeric(df["pontos"], errors='coerce').fillna(0.0).astype(float)
     df["clube_id"] = pd.to_numeric(df["clube_id"], errors='coerce').fillna(0).astype(int)
     
+    df = df[df["rodada"] > 0].copy()
     return df
 
 
@@ -173,8 +174,25 @@ def main():
     year_dirs = find_year_dirs(cartola_root)
     logger.info(f"Anos encontrados em caRtola: {[p.name for p in year_dirs]}")
 
-    all_partidas = []
-    all_pontuacoes = []
+    conn = sqlite3.connect(str(db_path))
+    
+    # Try to initialize DB scheme just in case it doesn't exist
+    try:
+        import sys
+        # Add project root to sys.path to import src
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from src.data.collector import CartolaDataCollector
+        # Create a dummy collector just to init database
+        # Requires mocking config for the database path
+        import yaml
+        dummy_config_path = cartola_root.parent / "temp_config.yaml"
+        with open(dummy_config_path, "w") as f:
+            yaml.dump({"database": {"path": str(db_path)}}, f)
+        collector = CartolaDataCollector(api_client=None, config_path=str(dummy_config_path))
+        dummy_config_path.unlink(missing_ok=True)
+        logger.info("Banco de dados inicializado/migrado pelo collector.py")
+    except Exception as e:
+        logger.warning(f"Não foi possível inicializar banco via collector, usando schema existente. Erro: {e}")
 
     for year_dir in year_dirs:
         logger.info(f"Processando ano {year_dir.name}...")
@@ -183,25 +201,11 @@ def main():
 
         if not part_year.empty:
             part_year["ano"] = int(year_dir.name)
-            all_partidas.append(part_year)
+            upsert_dataframe(part_year, "partidas", conn, if_exists="append")
+            
         if not pont_year.empty:
             pont_year["ano"] = int(year_dir.name)
-            all_pontuacoes.append(pont_year)
-
-    if not all_partidas and not all_pontuacoes:
-        logger.error("Nenhum dado válido encontrado. Verifique o layout dos CSVs.")
-        return
-
-    conn = sqlite3.connect(str(db_path))
-
-    if all_partidas:
-        df_partidas = pd.concat(all_partidas, ignore_index=True)
-        # Ajuste: se sua tabela 'partidas' tiver colunas extras, você pode preencher depois
-        upsert_dataframe(df_partidas, "partidas", conn, if_exists="append")
-
-    if all_pontuacoes:
-        df_pontuacoes = pd.concat(all_pontuacoes, ignore_index=True)
-        upsert_dataframe(df_pontuacoes, "pontuacoes", conn, if_exists="append")
+            upsert_dataframe(pont_year, "pontuacoes", conn, if_exists="append")
 
     conn.close()
     logger.info("Importação completa.")
