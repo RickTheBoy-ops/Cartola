@@ -2,28 +2,30 @@
 """
 Sistema Completo de Análise e Predição do Cartola FC
 
-Uso simples (roda TUDO automaticamente):
-    python main.py
+  Uso simples — roda TUDO e entrega UMA escalação consolidada:
+      python main.py
 
-Opções avançadas (opcionais):
-    python main.py --orcamento 110 --formacao 4-3-3
-    python main.py --modo valorizar
-    python main.py --reserva-luxo
-    python main.py --v3-features
-    python main.py --janela-historico 7
+  Opções avançadas (opcionais):
+      python main.py --orcamento 110
+      python main.py --formacao 4-3-3
+      python main.py --modo valorizar
+      python main.py --reserva-luxo
+      python main.py --v3-features
+      python main.py --janela-historico 7
 
-Pipeline obrigatório (executado sempre, sem precisar de flags):
-  1.  Inicializar API
-  2.  Coletar atletas + partidas da rodada
-  3.  Carregar histórico de pontuações + H2H confrontos
-  4.  Classificar confrontos (Grupo A/B/C) via últimos N H2H
-  5.  Desfalques + análise de confrontos
-  6.  Feature Engineering
-  7.  Treinar modelo ML (ou heurística se histórico insuficiente)
-  8.  Gerar predições cruzadas: ML × matchup × H2H × forma recente
-  9.  Specialist Checklist (capitão, avisos, validação)
-  10. Otimização genética → escalacão final única
-  [Opcional] Reserva de Luxo
+Pipeline obrigatório (sempre executado, sem precisar de flags):
+  [1]  Inicializar API
+  [2]  Coletar atletas + partidas da rodada
+  [3]  Carregar histórico de pontuações + H2H
+  [4]  Classificar confrontos Grupo A/B/C via últimos N H2H
+  [5]  Desfalques + análise de confrontos
+  [6]  Feature Engineering
+  [7]  Treinar modelo ML (ou heurística)
+  [8]  Predições cruzadas: ML × matchup × H2H × forma recente
+  [9]  Specialist Checklist
+  [10] Otimizador PuLP  (Programação Linear — solução ÓTIMA)
+  [11] Otimizador Genético (heurística complementar)
+  [12] ESCALAÇÃO CONSOLIDADA FINAL — melhor dos dois métodos
 """
 
 import argparse
@@ -47,6 +49,7 @@ from src.data.collector import CartolaDataCollector
 from src.ml.features import FeatureEngineer
 from src.ml.predictor import CartolaPredictor
 from src.ml.optimizer import GeneticTeamOptimizer
+from src.ml.pulp_optimizer import PuLPOptimizer
 from src.optimizer.factory import CartolaOptimizer
 from src.features.odds_integrator import OddsIntegrator
 from src.utils.validators import validar_mercado, validar_formacao, filtrar_atletas_com_jogo
@@ -58,9 +61,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ============================================================
-# CONFIGURAÇÃO E ARGS
-# ============================================================
+# ==============================================================
+# CONFIGURAÇÃO
+# ==============================================================
 
 def carregar_config(config_path: str = "config.yaml") -> dict:
     try:
@@ -73,39 +76,34 @@ def carregar_config(config_path: str = "config.yaml") -> dict:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Cartola FC – Roda python main.py e gera a melhor escalação automaticamente"
+        description="Cartola FC – python main.py gera escalação completa automaticamente"
     )
-    p.add_argument("--orcamento",         type=float, default=float(os.getenv("CARTOLA_ORCAMENTO", 110.0)))
-    p.add_argument("--formacao",          type=str,   default=os.getenv("CARTOLA_FORMACAO", ""))
-    p.add_argument("--modo",              type=str,   default=os.getenv("CARTOLA_MODO", "equilibrado"),
+    p.add_argument("--orcamento",        type=float, default=float(os.getenv("CARTOLA_ORCAMENTO", 110.0)))
+    p.add_argument("--formacao",         type=str,   default=os.getenv("CARTOLA_FORMACAO", ""))
+    p.add_argument("--modo",             type=str,   default=os.getenv("CARTOLA_MODO", "equilibrado"),
                    choices=["equilibrado", "pontuar", "valorizar"])
-    p.add_argument("--output-dir",        type=str,   default="output")
-    p.add_argument("--reserva-luxo",      action="store_true", default=False)
-    p.add_argument("--v3-features",       action="store_true", default=False)
-    p.add_argument("--janela-historico",  type=int,   default=5,
-                   help="Número de rodadas/confrontos no histórico H2H (padrão: 5)")
+    p.add_argument("--output-dir",       type=str,   default="output")
+    p.add_argument("--reserva-luxo",     action="store_true", default=False)
+    p.add_argument("--v3-features",      action="store_true", default=False)
+    p.add_argument("--janela-historico", type=int,   default=5)
     return p.parse_args()
 
 
-# ============================================================
-# HISTÓRICO DE CONFRONTOS H2H
-# ============================================================
+# ==============================================================
+# H2H — HISTÓRICO DE CONFRONTOS
+# ==============================================================
 
 def carregar_historico_confrontos(conn: sqlite3.Connection, rodada_atual: int) -> pd.DataFrame:
-    """
-    Busca todos os resultados históricos de partidas anteriores à rodada atual.
-    Usa clube_id_a / clube_id_b / placar_a / placar_b (colunas novas do collector).
-    """
     query = """
         SELECT
-            clube_id_a   AS clube_a,
-            clube_id_b   AS clube_b,
+            clube_id_a AS clube_a,
+            clube_id_b AS clube_b,
             rodada,
-            placar_a     AS gols_a,
-            placar_b     AS gols_b,
+            placar_a   AS gols_a,
+            placar_b   AS gols_b,
             CASE
-                WHEN placar_a > placar_b  THEN 'vitoria_a'
-                WHEN placar_a < placar_b  THEN 'vitoria_b'
+                WHEN placar_a > placar_b THEN 'vitoria_a'
+                WHEN placar_a < placar_b THEN 'vitoria_b'
                 ELSE 'empate'
             END AS resultado
         FROM partidas
@@ -117,50 +115,41 @@ def carregar_historico_confrontos(conn: sqlite3.Connection, rodada_atual: int) -
     try:
         return pd.read_sql_query(query, conn, params=(rodada_atual,))
     except Exception:
-        logger.warning("⚠️  Histórico H2H não disponível ainda (rodadas futuras ou banco novo)")
-        return pd.DataFrame(columns=["clube_a", "clube_b", "rodada", "gols_a", "gols_b", "resultado"])
+        logger.warning("⚠️  H2H não disponível ainda (banco novo ou rodadas futuras)")
+        return pd.DataFrame(columns=["clube_a","clube_b","rodada","gols_a","gols_b","resultado"])
 
 
 def ultimos_n_confrontos(hist_df: pd.DataFrame, ca: int, cb: int, n: int) -> pd.DataFrame:
-    """Filtra os últimos N jogos diretos entre dois clubes (ambos os sentidos)."""
     mask = (
-        ((hist_df["clube_a"] == ca) & (hist_df["clube_b"] == cb)) |
-        ((hist_df["clube_a"] == cb) & (hist_df["clube_b"] == ca))
+        ((hist_df["clube_a"]==ca) & (hist_df["clube_b"]==cb)) |
+        ((hist_df["clube_a"]==cb) & (hist_df["clube_b"]==ca))
     )
     return hist_df[mask].head(n)
 
 
 def score_h2h(h2h_df: pd.DataFrame, clube_id: int) -> float:
-    """Aproveitamento do clube nos H2H: 0.0 (perdeu tudo) a 1.0 (ganhou tudo)."""
     if h2h_df.empty:
         return 0.5
     pts = 0.0
     for _, row in h2h_df.iterrows():
-        if row["clube_a"] == clube_id and row["resultado"] == "vitoria_a":
+        if row["clube_a"]==clube_id and row["resultado"]=="vitoria_a":
             pts += 1
-        elif row["clube_b"] == clube_id and row["resultado"] == "vitoria_b":
+        elif row["clube_b"]==clube_id and row["resultado"]=="vitoria_b":
             pts += 1
-        elif row["resultado"] == "empate":
+        elif row["resultado"]=="empate":
             pts += 0.5
     return pts / len(h2h_df)
 
 
-# ============================================================
-# CLASSIFICAÇÃO DE CONFRONTOS (Grupo A/B/C)
-# ============================================================
+# ==============================================================
+# CLASSIFICAÇÃO DE CONFRONTOS
+# ==============================================================
 
 def classificar_confrontos(
     partidas_rodada: pd.DataFrame,
     hist_df: pd.DataFrame,
     janela: int
 ) -> pd.DataFrame:
-    """
-    Enriquece partidas da rodada com:
-      tipo_confronto  — 'A' (favorito), 'B' (aberto), 'C' (truncado)
-      media_gols_h2h  — média de gols nos últimos N H2H
-      score_h2h_a     — aproveitamento do time casa
-      score_h2h_b     — aproveitamento do time visitante
-    """
     if partidas_rodada.empty:
         return partidas_rodada
 
@@ -169,47 +158,39 @@ def classificar_confrontos(
     for _, row in partidas_rodada.iterrows():
         ca = int(row.get("clube_id_a", row.get("clube_casa_id", 0)))
         cb = int(row.get("clube_id_b", row.get("clube_visitante_id", 0)))
-
         h2h = ultimos_n_confrontos(hist_df, ca, cb, janela)
 
         mg = (
             (h2h["gols_a"].fillna(0) + h2h["gols_b"].fillna(0)).mean()
-            if not h2h.empty and "gols_a" in h2h.columns
-            else 2.5
+            if not h2h.empty and "gols_a" in h2h.columns else 2.5
         )
-
         sc_a = score_h2h(h2h, ca)
         sc_b = score_h2h(h2h, cb)
         diff = abs(sc_a - sc_b)
 
-        if diff >= 0.3:
-            tipo = "A"  # Amplo favoritismo
-        elif mg < 1.5:
-            tipo = "C"  # Jogo truncado / 0x0
-        else:
-            tipo = "B"  # Equilibrado
+        if diff >= 0.3:   tipo = "A"
+        elif mg < 1.5:    tipo = "C"
+        else:             tipo = "B"
 
         tipos.append(tipo)
         media_gols.append(round(mg, 2))
         sc_a_list.append(round(sc_a, 3))
         sc_b_list.append(round(sc_b, 3))
 
-    partidas_rodada = partidas_rodada.copy()
-    partidas_rodada["tipo_confronto"] = tipos
-    partidas_rodada["media_gols_h2h"] = media_gols
-    partidas_rodada["score_h2h_a"]    = sc_a_list
-    partidas_rodada["score_h2h_b"]    = sc_b_list
-
+    out = partidas_rodada.copy()
+    out["tipo_confronto"] = tipos
+    out["media_gols_h2h"] = media_gols
+    out["score_h2h_a"]    = sc_a_list
+    out["score_h2h_b"]    = sc_b_list
     logger.info(
-        f"📊 Confrontos da rodada — "
-        f"Grupo A: {tipos.count('A')} | B: {tipos.count('B')} | C: {tipos.count('C')}"
+        f"📊 Confrontos — Grupo A: {tipos.count('A')} | B: {tipos.count('B')} | C: {tipos.count('C')}"
     )
-    return partidas_rodada
+    return out
 
 
-# ============================================================
-# CRUZAMENTO DE SCORES (ML + H2H + FORMA)
-# ============================================================
+# ==============================================================
+# CRUZAMENTO DE SCORES
+# ==============================================================
 
 def cruzar_scores(
     predicoes_df: pd.DataFrame,
@@ -219,27 +200,20 @@ def cruzar_scores(
     janela: int
 ) -> pd.DataFrame:
     """
-    Gera coluna `score_cruzado`:
-        score_cruzado = score_ML × mult_confronto × norm_h2h
+    score_cruzado = score_ML x mult_confronto x norm_h2h
 
-    Multiplicadores:
-        Grupo A = 1.15  (favorito claro)
-        Grupo B = 1.00  (equilibrado)
-        Grupo C = 0.85  (truncado)
-
-    norm_h2h = 0.7 + aproveitamento_h2h × 0.6   (escala 0.7 – 1.3)
+    Grupo A = 1.15  |  B = 1.00  |  C = 0.85
+    norm_h2h = 0.7 + aproveitamento_h2h * 0.6  (escala 0.7-1.3)
     """
     if predicoes_df.empty:
         return predicoes_df
 
-    # Mapear clube → tipo e score H2H
     clube_tipo: Dict[int, str]   = {}
     clube_h2h:  Dict[int, float] = {}
-
     if not partidas_enriquecidas.empty:
         for _, row in partidas_enriquecidas.iterrows():
-            ca = int(row.get("clube_id_a", row.get("clube_casa_id", 0)))
-            cb = int(row.get("clube_id_b", row.get("clube_visitante_id", 0)))
+            ca   = int(row.get("clube_id_a", row.get("clube_casa_id", 0)))
+            cb   = int(row.get("clube_id_b", row.get("clube_visitante_id", 0)))
             tipo = row.get("tipo_confronto", "B")
             clube_tipo[ca] = tipo
             clube_tipo[cb] = tipo
@@ -247,18 +221,12 @@ def cruzar_scores(
             clube_h2h[cb]  = row.get("score_h2h_b", 0.5)
 
     pred = predicoes_df.copy()
-
-    # Garantir clube_id no df de predições
     if "clube_id" not in pred.columns and "atleta_id" in pred.columns and "clube_id" in atletas_df.columns:
         mapa = atletas_df.set_index("atleta_id")["clube_id"].to_dict()
         pred["clube_id"] = pred["atleta_id"].map(mapa).fillna(0).astype(int)
 
-    pred["tipo_confronto"] = pred.get("clube_id", pd.Series(0, index=pred.index)).map(
-        lambda cid: clube_tipo.get(int(cid), "B")
-    )
-    pred["score_h2h"] = pred.get("clube_id", pd.Series(0, index=pred.index)).map(
-        lambda cid: clube_h2h.get(int(cid), 0.5)
-    )
+    pred["tipo_confronto"] = pred["clube_id"].map(lambda c: clube_tipo.get(int(c), "B"))
+    pred["score_h2h"]      = pred["clube_id"].map(lambda c: clube_h2h.get(int(c), 0.5))
 
     mult_map = {"A": 1.15, "B": 1.0, "C": 0.85}
     pred["mult_confronto"] = pred["tipo_confronto"].map(mult_map).fillna(1.0)
@@ -273,62 +241,70 @@ def cruzar_scores(
 
     norm_h2h = 0.7 + pred["score_h2h"] * 0.6
     pred["score_cruzado"] = pred[score_base_col] * pred["mult_confronto"] * norm_h2h
-
-    logger.info(
-        f"🔀 score_cruzado gerado para {len(pred)} atletas "
-        f"(últimos {janela} confrontos H2H)"
-    )
+    logger.info(f"🔀 score_cruzado gerado para {len(pred)} atletas")
     return pred
 
 
-# ============================================================
-# HELPER DE IMPRESSÃO
-# ============================================================
+# ==============================================================
+# HELPERS DE SAÍDA
+# ==============================================================
 
-def imprimir_escalacao_final(team_df: pd.DataFrame, stats: dict, specialist_result: dict, patrimonio: float):
-    """Imprime escalação formatada no terminal, uma única vez."""
-    sep = "=" * 70
+def _score_display(row) -> float:
+    for col in ["score_cruzado", "score_final", "predicao"]:
+        v = row.get(col)
+        if v is not None and str(v) != 'nan':
+            return float(v)
+    return 0.0
+
+
+def imprimir_escalacao_final(
+    team_df: pd.DataFrame,
+    stats: dict,
+    specialist_result: dict,
+    patrimonio: float,
+    metodo: str = "CONSOLIDADO"
+):
+    """Imprime a escalação formatada no terminal."""
+    POS_GRUPOS = [
+        ([1],       "🧄 GOLEIRO"),
+        ([2, 3],    "🛡️  DEFESA"),
+        ([4],       "🎯 MEIO-CAMPO"),
+        ([5],       "⚽  ATAQUE"),
+        ([6],       "👨‍💼 TÉCNICO"),
+    ]
+    sep = "=" * 72
     print(f"\n{sep}")
-    print("          🏆  ESCALAÇÃO FINAL  🏆")
+    print(f"      🏆  ESCALAÇÃO FINAL [{metodo}]  🏆")
     print(sep)
-
-    # Agrupa por posição
-    for grupo, label in [
-        (["gol"],                       "🧄 GOLEIRO"),
-        (["zagueiro", "lateral"],        "🛡️  DEFESA"),
-        (["volante", "meia", "ponta"],   "🎯 MEIO-CAMPO"),
-        (["atacante"],                   "⚽  ATAQUE"),
-    ]:
-        pos_col = next((c for c in ["posicao", "posicao_id", "pos"] if c in team_df.columns), None)
+    pos_col = next((c for c in ["posicao_id", "pos"] if c in team_df.columns), None)
+    for ids, label in POS_GRUPOS:
         if pos_col:
-            subset = team_df[team_df[pos_col].isin(grupo)]
+            subset = team_df[team_df[pos_col].isin(ids)]
         else:
-            subset = team_df  # fallback: imprime tudo junto
-
-        if not subset.empty:
-            print(f"\n{label}")
-            for _, r in subset.iterrows():
-                apelido  = r.get("apelido", r.get("nome", "?"))
-                preco    = r.get("preco",   0.0)
-                score    = r.get("score_cruzado", r.get("score_final", 0.0))
-                tipo_c   = r.get("tipo_confronto", "-")
-                h2h_val  = r.get("score_h2h", 0.0)
-                selo     = r.get("selo_valorizacao", "")
-                print(
-                    f"   {apelido:<22} "
-                    f"C${preco:>5.2f}  "
-                    f"Score:{score:>6.2f}  "
-                    f"Conf:{tipo_c}  "
-                    f"H2H:{h2h_val:.2f}  "
-                    f"{selo}"
-                )
-
-    print(f"\n{'─'*70}")
-    print(f"  ⚽ Pontos Preditos : {stats.get('total_pontos_preditos', 0):.2f}")
-    print(f"  💰 Preço Total      : C${stats.get('total_preco', 0):.2f} / C${patrimonio:.2f}")
+            subset = team_df
+        if subset.empty:
+            continue
+        print(f"\n{label}")
+        for _, r in subset.iterrows():
+            nome    = r.get("apelido", r.get("Atleta", r.get("nome", "?")))
+            preco   = float(r.get("preco", r.get("Preço (C$)", 0)))
+            score   = _score_display(r)
+            tipo_c  = r.get("tipo_confronto", "-")
+            h2h_val = float(r.get("score_h2h", 0))
+            mult    = float(r.get("mult_confronto", 1.0))
+            print(
+                f"   {nome:<24}  C${preco:>6.2f}  "
+                f"Score:{score:>7.2f}  "
+                f"Conf:{tipo_c}(x{mult:.2f})  "
+                f"H2H:{h2h_val:.2f}"
+            )
+    print(f"\n{'━' * 72}")
+    print(f"  ⚽ Pontos Preditos  : {stats.get('total_pontos_preditos', 0):.2f}")
+    print(f"  💰 Preço Total      : C${stats.get('total_preco', 0):.2f} / C${patrimonio:.2f} "
+          f"({stats.get('patrimonio_usado_pct', 0):.1f}%)")
     cap = specialist_result.get('recommended_captain', '')
     if cap:
-        print(f"  ⭐ Capitão          : {cap}")
+        print(f"  ⭐ Capitão Sugerido : {cap}")
     print(sep + "\n")
 
 
@@ -342,49 +318,47 @@ def salvar_xlsx(team_df: pd.DataFrame, output_dir: Path, rodada: int, sufixo: st
     return path
 
 
-# ============================================================
+# ==============================================================
 # PIPELINE PRINCIPAL
-# ============================================================
+# ==============================================================
 
 def main():
     args   = parse_args()
     config = carregar_config()
 
     print()
-    print("=" * 70)
-    print("  🏆  CARTOLA FC – PIPELINE COMPLETO  |  python main.py")
-    print(f"  Orçamento: C${args.orcamento:.0f}  |  Modo: {args.modo.upper()}  |  H2H janela: {args.janela_historico}")
-    print("=" * 70)
+    print("=" * 72)
+    print("  🏆  CARTOLA FC | Pipeline Completo | python main.py")
+    print(f"  Orçamento: C${args.orcamento:.0f} | Modo: {args.modo.upper()} | H2H: {args.janela_historico} rodadas")
+    print("=" * 72)
 
-    EMAIL     = os.getenv('CARTOLA_EMAIL')
-    PASSWORD  = os.getenv('CARTOLA_PASSWORD')
+    EMAIL      = os.getenv('CARTOLA_EMAIL')
+    PASSWORD   = os.getenv('CARTOLA_PASSWORD')
     PATRIMONIO = args.orcamento
-    FORMACAO   = args.formacao if args.formacao else None
+    FORMACAO   = args.formacao if args.formacao else '4-3-3'
     JANELA     = args.janela_historico
 
-    if FORMACAO and not validar_formacao(FORMACAO):
+    if not validar_formacao(FORMACAO):
         logger.error(f"❌ Formação '{FORMACAO}' inválida.")
         return
 
     # ----------------------------------------------------------
-    # [1/10] API
+    # [1/12] API
     # ----------------------------------------------------------
-    logger.info("📡 [1/10] Inicializando cliente API...")
+    logger.info("📡 [1/12] Inicializando cliente API...")
     api_client = CartolaAPIClient(email=EMAIL, password=PASSWORD)
 
     # ----------------------------------------------------------
-    # [2/10] COLETA DE DADOS
+    # [2/12] COLETA
     # ----------------------------------------------------------
-    logger.info("📥 [2/10] Coletando dados da rodada...")
+    logger.info("📥 [2/12] Coletando dados da rodada...")
     collector = CartolaDataCollector(api_client)
-
     try:
         mercado      = collector.collect_mercado_status()
         mercado_info = validar_mercado(mercado)
         if not mercado_info['valido']:
             logger.error(f"❌ {mercado_info['mensagem']}")
             return
-
         rodada_atual = mercado_info['rodada_atual']
         logger.info(f"📊 {mercado_info['mensagem']}")
 
@@ -392,20 +366,17 @@ def main():
         if atletas_df.empty:
             logger.error("❌ Nenhum atleta encontrado.")
             return
-
         collector.collect_partidas(rodada_atual)
         logger.info(f"✅ {len(atletas_df)} atletas coletados")
-
     except Exception as e:
         logger.error(f"❌ Erro na coleta: {e}")
         return
 
     # ----------------------------------------------------------
-    # [3/10] HISTÓRICO + H2H
+    # [3/12] HISTÓRICO + H2H
     # ----------------------------------------------------------
-    logger.info("📚 [3/10] Carregando histórico + H2H...")
+    logger.info("📚 [3/12] Carregando histórico + H2H...")
     conn = sqlite3.connect(collector.db_path)
-
     historico_df = pd.read_sql_query("""
         SELECT p.*, a.clube_id FROM pontuacoes p
         JOIN atletas a ON p.atleta_id = a.atleta_id
@@ -419,9 +390,8 @@ def main():
 
     hist_h2h_df = carregar_historico_confrontos(conn, rodada_atual)
     conn.close()
-
     logger.info(
-        f"📊 Histórico: {len(historico_df)} reg | Partidas: {len(partidas_df)} | H2H base: {len(hist_h2h_df)}"
+        f"📊 Histórico: {len(historico_df)} reg | Partidas: {len(partidas_df)} | H2H: {len(hist_h2h_df)}"
     )
 
     # Clubes
@@ -445,25 +415,24 @@ def main():
     logger.info(f"✅ {len(atletas_df)} atletas com jogo confirmado")
 
     # ----------------------------------------------------------
-    # [4/10] ANÁLISE DE CONFRONTOS (Grupo A/B/C)
+    # [4/12] CLASSIFICAÇÃO DE CONFRONTOS
     # ----------------------------------------------------------
-    logger.info("🔍 [4/10] Classificando confrontos da rodada...")
+    logger.info("🔍 [4/12] Classificando confrontos (Grupo A/B/C)...")
     partidas_rodada = (
         partidas_df[partidas_df['rodada'] == rodada_atual].copy()
         if not partidas_df.empty else pd.DataFrame()
     )
     partidas_enriquecidas = classificar_confrontos(partidas_rodada, hist_h2h_df, JANELA)
-
     if not partidas_enriquecidas.empty:
-        cols_exibir = [c for c in
+        cols_show = [c for c in
             ["clube_id_a","clube_id_b","tipo_confronto","media_gols_h2h","score_h2h_a","score_h2h_b"]
             if c in partidas_enriquecidas.columns]
-        logger.info(f"\n{partidas_enriquecidas[cols_exibir].to_string(index=False)}")
+        logger.info(f"\n{partidas_enriquecidas[cols_show].to_string(index=False)}")
 
     # ----------------------------------------------------------
-    # [5/10] FEATURE ENGINEERING
+    # [5/12] FEATURE ENGINEERING
     # ----------------------------------------------------------
-    logger.info("🔧 [5/10] Gerando features...")
+    logger.info("🔧 [5/12] Gerando features...")
     if len(historico_df) > 0:
         if args.v3_features:
             historico_df = FeatureEngineer.engineer_all_features_v3(historico_df, partidas_df)
@@ -475,21 +444,21 @@ def main():
         logger.warning("⚠️  Sem histórico para feature engineering")
 
     # ----------------------------------------------------------
-    # [6/10] ODDS (sempre tenta, sem exigir flag)
+    # [6/12] ODDS
     # ----------------------------------------------------------
-    logger.info("🎲 [6/10] Integrando odds...")
+    logger.info("🎲 [6/12] Integrando odds...")
     try:
         odds_integrator = OddsIntegrator()
         atletas_df = odds_integrator.enrich(atletas_df, partidas_df, clubes_df)
         logger.info("✅ Odds integradas")
     except Exception as e:
-        logger.warning(f"⚠️  Odds não disponíveis ({e}) — continuando sem odds")
+        logger.warning(f"⚠️  Odds indisponíveis ({e}) — continuando sem odds")
 
     # ----------------------------------------------------------
-    # [7/10] TREINO DO MODELO ML
+    # [7/12] TREINO ML
     # ----------------------------------------------------------
-    logger.info("🧠 [7/10] Treinando modelo ML...")
-    predictor   = CartolaPredictor(model_type=config.get('ml',{}).get('model_type','rf'))
+    logger.info("🧠 [7/12] Treinando modelo ML...")
+    predictor    = CartolaPredictor(model_type=config.get('ml',{}).get('model_type','rf'))
     dados_treino = (
         historico_df[historico_df['rodada'] < rodada_atual]
         if len(historico_df) > 0 else pd.DataFrame()
@@ -503,36 +472,29 @@ def main():
         predictor.save_model(str(model_path))
         logger.info(f"✅ Modelo treinado | {metrics}")
     else:
-        logger.warning(
-            f"⚠️  Histórico insuficiente ({len(dados_treino)} reg) — usando heurística"
-        )
+        logger.warning(f"⚠️  Histórico insuficiente ({len(dados_treino)} reg) — usando heurística")
 
     # ----------------------------------------------------------
-    # [8/10] PREDIÇÕES + CRUZAMENTO H2H
+    # [8/12] PREDIÇÕES + CRUZAMENTO H2H
     # ----------------------------------------------------------
-    logger.info(f"🎯 [8/10] Gerando predições cruzadas (ML + H2H últimos {JANELA})...")
+    logger.info(f"🎯 [8/12] Predições cruzadas (ML + H2H últimos {JANELA})...")
 
     if can_train and predictor.is_trained:
         ultimos = (
             historico_df.sort_values('rodada')
             .groupby('atleta_id').tail(JANELA)
         )
-        ultimos_agg = (
-            ultimos.sort_values('rodada')
-            .groupby('atleta_id').last()
-            .reset_index()
-        )
+        ultimos_agg = ultimos.groupby('atleta_id').last().reset_index()
         dados_pred = atletas_df.merge(
             ultimos_agg, on='atleta_id', how='left', suffixes=('','_hist')
         ).fillna(0)
         predicoes_df = predictor.predict_full(dados_pred)
-        logger.info("✅ Predições com pesos táticos geradas")
+        logger.info("✅ Predições ML geradas")
     else:
         predicoes_df = CartolaPredictor.fallback_heuristica(atletas_df)
         predicoes_df['predicao_ajustada'] = predicoes_df['predicao']
         predicoes_df = CartolaPredictor.add_valorizacao_flag(predicoes_df)
 
-    # Score por modo
     score_col = (
         'predicao_ajustada' if 'predicao_ajustada' in predicoes_df.columns else 'predicao'
     )
@@ -546,13 +508,12 @@ def main():
         val_w = predicoes_df.get('valorizacao_score', pd.Series(50, index=predicoes_df.index))
         predicoes_df['score_final'] = predicoes_df[score_col] * 0.65 + val_w * 0.35
 
-    logger.info(f"⚖️  Modo {args.modo.upper()} aplicado ao score")
+    logger.info(f"⚖️  Modo {args.modo.upper()} aplicado")
 
     # Cruzamento H2H
     predicoes_df = cruzar_scores(
         predicoes_df, atletas_df, partidas_enriquecidas, hist_h2h_df, JANELA
     )
-
     ranking_col = 'score_cruzado' if 'score_cruzado' in predicoes_df.columns else 'score_final'
     predicoes_df['fitness_score'] = predicoes_df[ranking_col]
 
@@ -562,9 +523,9 @@ def main():
     logger.info(f"\n🏆 Top 10 pré-otimização:\n{top10[cols_top].to_string(index=False)}")
 
     # ----------------------------------------------------------
-    # [9/10] SPECIALIST CHECKLIST
+    # [9/12] SPECIALIST CHECKLIST
     # ----------------------------------------------------------
-    logger.info("🔎 [9/10] Executando Specialist Checklist...")
+    logger.info("🔎 [9/12] Specialist Checklist...")
     specialist_result: dict = {}
     try:
         from src.ml.specialist_logic import CartolaPrescalingChecklist
@@ -573,47 +534,76 @@ def main():
             budget=PATRIMONIO,
             atletas_df=atletas_df,
             partidas_df=(
-                partidas_enriquecidas if not partidas_enriquecidas.empty
-                else partidas_df
+                partidas_enriquecidas
+                if not partidas_enriquecidas.empty else partidas_df
             ),
             predicoes_df=predicoes_df,
             modo=args.modo,
         )
         specialist_result = checklist.run()
         logger.info(
-            f"✅ Checklist OK | Capitão sugerido: "
-            f"{specialist_result.get('recommended_captain', 'N/A')}"
+            f"✅ Checklist OK | Capitão: {specialist_result.get('recommended_captain','N/A')}"
         )
         for w in specialist_result.get('warnings', []):
             logger.warning(f"   ⚠️  {w}")
     except Exception as e:
-        logger.error(
-            f"❌ Specialist falhou: {e}\n{traceback.format_exc()}"
-        )
-        # Não interrompe — prossegue com otimização sem checklist
+        logger.error(f"❌ Specialist falhou: {e}\n{traceback.format_exc()}")
+        # Não interrompe o pipeline
 
-    # ----------------------------------------------------------
-    # [10/10] OTIMIZAÇÃO GENÉTICA → ESCALAÇÃO Única
-    # ----------------------------------------------------------
-    logger.info("🧬 [10/10] Otimizando time...")
-    opt_config = config.get('optimizer', {})
-
+    # Merge atletas + predicoes para os otimizadores
     pred_opt = predicoes_df.copy()
     if 'predicao_std' not in pred_opt.columns:
         pred_opt['predicao_std'] = 0.0
-
     if 'odds_score' in pred_opt.columns:
         pred_opt['fitness_score'] = (
-            pred_opt['fitness_score'] * 0.8
-            + pred_opt['odds_score'] * 20 * 0.2
+            pred_opt['fitness_score'] * 0.8 + pred_opt['odds_score'] * 20 * 0.2
         )
 
+    opt_config = config.get('optimizer', {})
+
+    # ----------------------------------------------------------
+    # [10/12] OTIMIZADOR PuLP — PROGRAMAÇÃO LINEAR (solutão ÓTIMA)
+    # ----------------------------------------------------------
+    logger.info("📊 [10/12] Otimizador PuLP (Programação Linear)...")
+    pulp_team_df, pulp_stats = None, {}
+
+    if PuLPOptimizer.disponivel():
+        try:
+            # Juntar atletas com scores cruzados
+            atletas_enriquecidos = atletas_df.merge(
+                pred_opt[['atleta_id','score_cruzado','score_final','tipo_confronto',
+                           'score_h2h','mult_confronto']].drop_duplicates('atleta_id'),
+                on='atleta_id', how='left'
+            )
+            pulp_opt = PuLPOptimizer(
+                atletas_df=atletas_enriquecidos,
+                patrimonio=PATRIMONIO,
+                formacao=FORMACAO,
+                max_mesmo_clube=opt_config.get('max_mesmo_clube', 3),
+                score_col='score_cruzado',
+            )
+            pulp_team_df, pulp_stats = pulp_opt.optimize()
+            if pulp_team_df is not None:
+                logger.info(
+                    f"✅ PuLP OK | Score: {pulp_stats.get('total_score_cruzado',0):.2f} | "
+                    f"Preço: C${pulp_stats.get('total_preco',0):.2f}"
+                )
+        except Exception as e:
+            logger.error(f"❌ PuLP falhou: {e}\n{traceback.format_exc()}")
+    else:
+        logger.warning("⚠️  PuLP não instalado. Instale com: pip install pulp")
+
+    # ----------------------------------------------------------
+    # [11/12] OTIMIZADOR GENÉTICO (heurística complementar)
+    # ----------------------------------------------------------
+    logger.info("🧬 [11/12] Otimizador Genético...")
+    genetic_team, genetic_stats = None, {}
     try:
-        optimizer = GeneticTeamOptimizer(
+        gen_opt = GeneticTeamOptimizer(
             atletas_df=atletas_df,
             predicoes=pred_opt,
             patrimonio=PATRIMONIO,
-            formacao=FORMACAO or '4-3-3',
+            formacao=FORMACAO,
             population_size=opt_config.get('population_size', 250),
             generations=opt_config.get('generations', 150),
             mutation_rate=opt_config.get('mutation_rate', 0.20),
@@ -621,30 +611,70 @@ def main():
             max_mesmo_clube=opt_config.get('max_mesmo_clube', 3),
             penalidade_variancia=opt_config.get('penalidade_variancia', True),
         )
-        best_team, stats = optimizer.optimize()
-        team_df = optimizer.format_team_output(best_team)
+        best_team_raw, genetic_stats = gen_opt.optimize()
+        genetic_team = gen_opt.format_team_output(best_team_raw)
 
-        # Enriquecer output
+        # Enriquecer com scores cruzados
         extra = [c for c in
-            ['atleta_id','selo_valorizacao','mpv','margem_valorizacao',
-             'tipo_confronto','score_h2h','score_cruzado']
+            ['atleta_id','tipo_confronto','score_h2h','score_cruzado','mult_confronto',
+             'selo_valorizacao']
             if c in predicoes_df.columns]
-        if extra and 'atleta_id' in team_df.columns:
-            team_df = team_df.merge(predicoes_df[extra], on='atleta_id', how='left')
-
-        # Imprimir
-        imprimir_escalacao_final(team_df, stats, specialist_result, PATRIMONIO)
-
-        # Salvar XLSX
-        output_dir = Path(args.output_dir)
-        salvar_xlsx(team_df, output_dir, rodada_atual)
-
+        if extra and 'atleta_id' in genetic_team.columns:
+            genetic_team = genetic_team.merge(
+                predicoes_df[extra], on='atleta_id', how='left'
+            )
+        logger.info(
+            f"✅ Genético OK | Pontos: {genetic_stats.get('total_pontos_preditos',0):.2f} | "
+            f"Preço: C${genetic_stats.get('total_preco',0):.2f}"
+        )
     except Exception as e:
-        logger.error(f"❌ Erro na otimização: {e}\n{traceback.format_exc()}")
-        return
+        logger.error(f"❌ Genético falhou: {e}\n{traceback.format_exc()}")
 
     # ----------------------------------------------------------
-    # [EXTRA] RESERVA DE LUXO (opcional)
+    # [12/12] ESCALAÇÃO CONSOLIDADA — Melhor dos dois
+    # ----------------------------------------------------------
+    logger.info("🏆 [12/12] Consolidando escalação final...")
+    output_dir = Path(args.output_dir)
+
+    pulp_score    = pulp_stats.get('total_score_cruzado', -1) if pulp_team_df is not None else -1
+    genetic_score = genetic_stats.get('total_pontos_preditos', -1) if genetic_team is not None else -1
+
+    # Mostra ambos se disponíveis, elege o melhor
+    if pulp_team_df is not None and not pulp_team_df.empty:
+        ps = dict(pulp_stats)
+        ps['patrimonio_usado_pct'] = ps.get('patrimonio_usado_pct', 0)
+        imprimir_escalacao_final(pulp_team_df, ps, specialist_result, PATRIMONIO, metodo="PuLP (ÓTIMO)")
+        salvar_xlsx(pulp_team_df, output_dir, rodada_atual, "pulp")
+
+    if genetic_team is not None and not genetic_team.empty:
+        gs = dict(genetic_stats)
+        gs['patrimonio_usado_pct'] = gs.get('patrimonio_usado', 0)
+        imprimir_escalacao_final(genetic_team, gs, specialist_result, PATRIMONIO, metodo="Genético")
+        salvar_xlsx(genetic_team, output_dir, rodada_atual, "genetico")
+
+    # ESCALAÇÃO FINAL: PuLP tem prioridade (matematicamente ótimo)
+    # Se PuLP não rodou, usa genético.
+    if pulp_team_df is not None and not pulp_team_df.empty:
+        final_team  = pulp_team_df
+        final_stats = pulp_stats
+        metodo_final = "PuLP — Matematicamente Ótimo"
+    elif genetic_team is not None:
+        final_team  = genetic_team
+        final_stats = genetic_stats
+        metodo_final = "Genético (PuLP indisponível)"
+    else:
+        logger.error("❌ Nenhum otimizador produziu resultado.")
+        return
+
+    print()
+    print("#" * 72)
+    print(f"#  ESCALAÇÃO CONSOLIDADA FINAL   [{metodo_final}]")
+    print("#" * 72)
+    imprimir_escalacao_final(final_team, final_stats, specialist_result, PATRIMONIO, metodo="FINAL")
+    salvar_xlsx(final_team, output_dir, rodada_atual, "FINAL")
+
+    # ----------------------------------------------------------
+    # [EXTRA] RESERVA DE LUXO
     # ----------------------------------------------------------
     if args.reserva_luxo:
         logger.info("🔄 [EXTRA] Calculando Reserva de Luxo...")
@@ -653,40 +683,37 @@ def main():
                 'max_players_per_club': opt_config.get('max_mesmo_clube', 3),
                 'solver_time_limit': 30,
             })
-            from src.features.feature_engineering_v2 import FeatureEngineeringV2
             df_mega = atletas_df.copy()
             if 'fitness_score' in predicoes_df.columns:
                 score_map = predicoes_df.set_index('atleta_id')['fitness_score'].to_dict()
                 df_mega['mega_score'] = df_mega['atleta_id'].map(score_map).fillna(0)
-            else:
-                df_mega = FeatureEngineeringV2().engineer_features(df_mega)
-
             for col in ['selo_valorizacao','mpv','margem_valorizacao']:
                 if col in predicoes_df.columns:
                     df_mega = df_mega.merge(
                         predicoes_df[['atleta_id', col]], on='atleta_id', how='left'
                     )
-
             resultado_reserva = mega_opt.strategy.optimize_with_luxury_reserve(
                 df=df_mega, budget=PATRIMONIO, formation=FORMACAO
             )
             if resultado_reserva:
                 mega_opt.strategy.print_lineup_with_reserve(resultado_reserva)
-                output_dir = Path(args.output_dir)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                reserva_path = output_dir / f"escalacao_reserva_r{rodada_atual}_{ts}.xlsx"
-                with pd.ExcelWriter(reserva_path, engine='openpyxl') as w:
+                with pd.ExcelWriter(
+                    output_dir / f"escalacao_reserva_r{rodada_atual}_{ts}.xlsx",
+                    engine='openpyxl'
+                ) as w:
                     resultado_reserva['titulares'].to_excel(w, sheet_name='Titulares', index=False)
                     if not resultado_reserva['reservas'].empty:
                         resultado_reserva['reservas'].to_excel(w, sheet_name='Reservas', index=False)
-                logger.info(f"💾 Reservas salvas: {reserva_path}")
+                logger.info("✅ Reservas salvas")
         except Exception as e:
-            logger.error(f"❌ Reserva de Luxo falhou: {e}\n{traceback.format_exc()}")
+            logger.error(f"❌ Reserva de Luxo falhou: {e}")
 
     print()
-    print("=" * 70)
-    print("  ✅  PIPELINE CONCLUÍDO! Escalação gerada com análise completa da rodada.")
-    print("=" * 70)
+    print("=" * 72)
+    print("  ✅  PIPELINE CONCLUÍDO! Escalação gerada com análise completa.")
+    print(f"  📁 Salva em: {output_dir}/")
+    print("=" * 72)
     print()
 
 
