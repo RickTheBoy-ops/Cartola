@@ -474,6 +474,59 @@ class FeatureEngineer:
     # ---------------------------------------------------------------
 
     @staticmethod
+    def add_score_no_cleansheets(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calcula score_sem_sg: pontuação sem o bônus de Jogo Sem Gols (SG).
+
+        Traduz o 'score.no.cleansheets' dos scripts R (create_players_stats.R).
+        Útil para avaliar a qualidade intrinseca de defensores descontando
+        a sorte de não ter levado gol.
+
+        Estratégia:
+          1. Caminho rápido: se pontos_num (ou pontos) + SG disponíveis,
+             subtrai SG * 5.0  — mais preciso, respeita pontuação oficial.
+          2. Fallback: reconstrói via scouts individuais e remove SG.
+             Útil para dados históricos do caRtola onde só há scouts.
+        """
+        df = df.copy()
+        BONUS_SG = 5.0
+
+        # --- Caminho 1: pontos_num ou pontos + coluna SG ---
+        pontos_col = (
+            "pontos_num" if "pontos_num" in df.columns
+            else ("pontos" if "pontos" in df.columns else None)
+        )
+        if pontos_col is not None and "SG" in df.columns:
+            df["score_sem_sg"] = (
+                df[pontos_col].fillna(0).astype(float)
+                - df["SG"].fillna(0).astype(float) * BONUS_SG
+            )
+            logger.info("✅ Feature 'score_sem_sg' calculada via %s - SG*%.0f", pontos_col, BONUS_SG)
+            return df
+
+        # --- Caminho 2: reconstituição via scouts (dados históricos CSV) ---
+        SCOUT_PESOS = {
+            "G": 8.0, "A": 5.0, "FT": 3.5, "FD": 3.0, "FF": 1.0,
+            "FS": 0.5, "DS": 1.0, "DE": 3.0, "DP": 7.0,
+            "GS": -5.0, "CA": -2.0, "CV": -5.0, "FC": -0.5,
+            "GC": -1.0, "PP": -4.0, "I": -0.1, "PE": -0.1,
+            # SG excluído intencionalmente (esse é o ponto central do método)
+        }
+        for col in SCOUT_PESOS:
+            if col not in df.columns:
+                df[col] = 0
+
+        score = pd.Series(0.0, index=df.index)
+        for col, w in SCOUT_PESOS.items():
+            score = score + df[col].fillna(0).astype(float) * w
+
+        df["score_sem_sg"] = score
+        logger.info("✅ Feature 'score_sem_sg' calculada via scouts (fallback)")
+        return df
+
+    # ---------------------------------------------------------------
+
+    @staticmethod
     def add_home_away_averages(df: pd.DataFrame) -> pd.DataFrame:
         """
         Calcula médias separadas por mando de campo (MC e MF) para cada atleta.
@@ -626,7 +679,7 @@ class FeatureEngineer:
     ) -> pd.DataFrame:
         """
         Versão V3 do pipeline completo de features.
-        Adiciona MC/MF e pontos cedidos por posição ao pipeline existente.
+        Adiciona MC/MF, pontos cedidos por posição e score_sem_sg ao pipeline.
         """
         # Roda pipeline base (V2)
         df = cls.engineer_all_features(df, partidas_df)
@@ -634,6 +687,8 @@ class FeatureEngineer:
         # === NOVAS FEATURES V3 ===
         df = cls.add_home_away_averages(df)
         df = cls.add_points_conceded_by_position(df, partidas_df)
+        # Score sem bônus de Jogo Sem Gols (R: score.no.cleansheets)
+        df = cls.add_score_no_cleansheets(df)
 
         # Remover NaN / infinitos residuais
         df = df.fillna(0)

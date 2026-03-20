@@ -7,6 +7,13 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+try:
+    from src.models.team_ranking import PoissonTeamRanking
+    _poisson_available = True
+except ImportError:
+    _poisson_available = False
+    logger.debug("PoissonTeamRanking não disponível.")
+
 
 @dataclass
 class TeamMatchupRow:
@@ -222,6 +229,55 @@ class MatchupAnalyzer:
             df.loc[grp.index, "btts_no_probability"] = float(np.clip(btts_no, 0.0, 1.0))
 
         logger.info("✅ MatchupAnalyzer: %d linhas de confronto geradas", len(df))
+
+        # Enriquecer clean_sheet_probability com Poisson, se disponível
+        df = self._enrich_with_poisson_cs(df)
+
+        return df
+
+    def _enrich_with_poisson_cs(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Recalibra clean_sheet_probability usando o modelo Poisson GLM.
+
+        Mistura 50/50 com a probabilidade histórica já calculada.
+        Se o Poisson falhar (dados insuficientes, statsmodels ausente,
+        erro numérico), loga warning e retorna df sem alterações.
+
+        Traduz a lógica do 'predictCleanSheets' de team_data_create_features.R.
+        """
+        if df.empty:
+            return df
+        if not _poisson_available:
+            logger.debug("Poisson indisponível, usando SG histórico.")
+            return df
+
+        try:
+            model = PoissonTeamRanking().fit(self.historico)
+        except Exception as e:
+            logger.warning("⚠️ PoissonTeamRanking não ajustou: %s", e)
+            return df
+
+        for idx, row in df.iterrows():
+            try:
+                ca = int(row["clube_id"])
+                cb = int(row["adversario_id"])
+                mando = int(row["mando_casa"])
+
+                if mando == 1:
+                    # P(SG) = P(visitante não marca contra o mandante)
+                    p_poisson = model.predict_clean_sheet_prob(home_id=ca, away_id=cb)
+                else:
+                    # P(SG do visitante) = P(mandante não marca contra o visitante)
+                    p_poisson = model.predict_clean_sheet_prob(home_id=cb, away_id=ca)
+
+                cs_hist = float(df.at[idx, "clean_sheet_probability"])
+                df.at[idx, "clean_sheet_probability"] = 0.5 * cs_hist + 0.5 * p_poisson
+
+            except Exception as e:
+                logger.debug("Poisson CS falhou para clube %s: %s", row.get("clube_id"), e)
+                continue
+
+        logger.info("✅ MatchupAnalyzer: clean_sheet_probability enriquecida com Poisson")
         return df
 
     @staticmethod

@@ -105,14 +105,15 @@ class CartolaPredictor:
 
         if validate and len(X) > 10:
             tscv = TimeSeriesSplit(n_splits=min(5, len(X) // 2))
+            cv_scores = None
             try:
-                scores = cross_val_score(
+                cv_scores = cross_val_score(
                     self.model, X, y,
                     cv=tscv,
                     scoring='neg_mean_absolute_error',
                     n_jobs=-1
                 )
-                logger.info(f"📊 MAE Cross-Validation: {-scores.mean():.2f} (+/- {scores.std():.2f})")
+                logger.info(f"📊 MAE Cross-Validation: {-cv_scores.mean():.2f} (+/- {cv_scores.std():.2f})")
             except Exception as e:
                 logger.warning(f"⚠️ Erro no Cross-Validation: {e}")
 
@@ -120,19 +121,35 @@ class CartolaPredictor:
         self.model.fit(X, y)
         self.is_trained = True
 
-        # Métricas de treino
-        y_pred = self.model.predict(X)
-
-        metrics = {
-            'mae': mean_absolute_error(y, y_pred),
-            'rmse': np.sqrt(mean_squared_error(y, y_pred)),
-            'r2': r2_score(y, y_pred),
-            'fallback': False
-        }
+        # Métricas: usa CV se disponível (evita data leakage de avaliar no conjunto de treino)
+        if validate and cv_scores is not None:
+            metrics = {
+                'mae': float(-cv_scores.mean()),
+                'mae_std': float(cv_scores.std()),
+                'rmse': float(-cv_scores.mean()),  # aproximação; RMSE via CV requer scoring customizado
+                'r2': 0.0,   # R² via CV seria otimista; fica 0 para não enganar
+                'fallback': False,
+                'source': 'cross_val'
+            }
+        else:
+            # Fallback: métricas no treino (infladas — só usar se CV falhar)
+            y_pred = self.model.predict(X)
+            metrics = {
+                'mae': mean_absolute_error(y, y_pred),
+                'rmse': np.sqrt(mean_squared_error(y, y_pred)),
+                'r2': r2_score(y, y_pred),
+                'fallback': False,
+                'source': 'train_set_INFLATED'
+            }
+            logger.warning(
+                "⚠️ Métricas calculadas no conjunto de TREINO (infladas). "
+                "Use cross_val para métricas reais."
+            )
 
         logger.info(
-            f"📈 Métricas de treino - MAE: {metrics['mae']:.2f}, "
-            f"RMSE: {metrics['rmse']:.2f}, R²: {metrics['r2']:.3f}"
+            f"📈 Métricas ({metrics.get('source','?')}) — "
+            f"MAE: {metrics['mae']:.2f}, "
+            f"RMSE: {metrics['rmse']:.2f}"
         )
 
         # Feature importance
@@ -202,11 +219,20 @@ class CartolaPredictor:
         """
         Prediz com multiplicadores táticos por posição e contexto de partida.
 
+        ATENÇÃO — Double dipping:
+        As features bonus_oponente_fraco, mando_casa e clube_vitorias_recentes
+        já são usadas no treino do modelo. Aplicar multiplicadores em cima
+        delas soma o efeito duas vezes para boas/más condições.
+
+        Decisão de design: os multiplicadores aqui são MODERADOS (≤30%) e
+        têm papel de ajuste heurístico final. Em futuro refactor, escolher
+        entre: remover essas features do treino, ou eliminar os multiplicadores.
+
         Multiplicadores aplicados:
         - ATA (pos 5) vs defesa fraca (bonus_oponente_fraco > 0.7)  → +30%
         - MEI (pos 4) vs defesa fraca (bonus_oponente_fraco > 0.6)  → +25%
         - ZAG (pos 3) em casa + clube vitorioso (>= 2 vitórias)    → +15%
-        - Bnus geral em casa para todos                              → +10%
+        - Bônus geral em casa para todos                              → +10%
         """
         result_df = self.predict_with_confidence(df)
 
