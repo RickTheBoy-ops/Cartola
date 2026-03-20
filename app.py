@@ -397,16 +397,18 @@ with tab_analise:
 
                 # ── 3. Histórico ───────────────────────────────
                 conn = sqlite3.connect(str(collector.db_path))
+                ano_atual = mercado.get('temporada', 2026)
+                
                 historico_df = pd.read_sql_query("""
                     SELECT p.*, a.clube_id FROM pontuacoes p
                     JOIN atletas a ON p.atleta_id = a.atleta_id
-                    WHERE p.rodada >= ? AND p.rodada <= ?
+                    WHERE p.ano = ? AND p.rodada >= ? AND p.rodada <= ?
                     ORDER BY p.atleta_id, p.rodada
-                """, conn, params=(max(1, rodada_atual - 15), rodada_atual))
+                """, conn, params=(ano_atual, max(1, rodada_atual - 15), rodada_atual))
 
                 partidas_df = pd.read_sql_query("""
-                    SELECT * FROM partidas WHERE rodada >= ? AND rodada <= ?
-                """, conn, params=(max(1, rodada_atual - 15), rodada_atual))
+                    SELECT * FROM partidas WHERE ano = ? AND rodada >= ? AND rodada <= ?
+                """, conn, params=(ano_atual, max(1, rodada_atual - 15), rodada_atual))
                 conn.close()
 
                 log(f"{len(historico_df)} registros de pontuação | {len(partidas_df)} partidas", "ok")
@@ -559,68 +561,10 @@ with tab_analise:
         rodada_atual  = st.session_state['rodada']
 
         st.markdown("<hr class='custom'>", unsafe_allow_html=True)
-        st.markdown(f"#### 📊 Predições — Rodada {rodada_atual}")
+        st.success("✅ Análise e otimização concluídas com sucesso! Clique na aba **🏆 Time Otimizado** acima para ver os 12 jogadores escalados.")
 
         score_col = 'predicao_ajustada' if 'predicao_ajustada' in predicoes_df.columns else 'predicao'
-
-        # Filtros
-        col_f1, col_f2, col_f3 = st.columns(3)
-        with col_f1:
-            pos_filter = st.multiselect(
-                "Posição", options=[1,2,3,4,5,6],
-                format_func=lambda x: POSICAO_NOME[x],
-                default=[1,2,3,4,5,6]
-            )
-        with col_f2:
-            top_n = st.slider("Top N atletas", 5, 50, 20)
-        with col_f3:
-            preco_max = st.number_input("Preço máximo (C$)", min_value=0.0, max_value=50.0, value=50.0, step=1.0)
-
-        # Filtrar e exibir
-        pred_filtrado = predicoes_df[predicoes_df['posicao_id'].isin(pos_filter)]
-        if preco_max < 50.0:
-            pred_filtrado = pred_filtrado[pred_filtrado['preco'] <= preco_max]
-        pred_filtrado = pred_filtrado.nlargest(top_n, score_col).copy()
-
-        # Montar tabela visual
-        rows_html = ""
-        for _, row in pred_filtrado.iterrows():
-            pos_id  = int(row.get('posicao_id', 0))
-            nome    = row.get('apelido', '—')
-            preco   = row.get('preco', 0)
-            pred_b  = row.get('predicao', 0)
-            pred_aj = row.get(score_col, pred_b)
-            boost   = (pred_aj / pred_b - 1) * 100 if pred_b > 0 else 0
-
-            boost_tag = ""
-            if boost > 1:
-                boost_tag = f'<span class="boost-tag">+{boost:.0f}% tático</span>'
-
-            rows_html += f"""
-            <tr style="border-bottom:1px solid #21262d;">
-                <td style="padding:10px 8px;">{badge_pos(pos_id)}</td>
-                <td style="padding:10px 8px; font-weight:500; color:#e6edf3;">{nome}</td>
-                <td style="padding:10px 8px; color:#8b949e;">{fmt_preco(preco)}</td>
-                <td style="padding:10px 8px; color:#58a6ff;">{pred_b:.2f}</td>
-                <td style="padding:10px 8px; color:#39d353; font-weight:600;">{pred_aj:.2f} {boost_tag}</td>
-            </tr>"""
-
-        st.markdown(f"""
-        <div style="background:#161b22; border:1px solid #30363d; border-radius:12px; overflow:hidden;">
-            <table style="width:100%; border-collapse:collapse; font-size:0.88rem;">
-                <thead>
-                    <tr style="background:#21262d; color:#8b949e; font-size:0.78rem; text-transform:uppercase; letter-spacing:.05em;">
-                        <th style="padding:10px 8px; text-align:left;">Pos</th>
-                        <th style="padding:10px 8px; text-align:left;">Atleta</th>
-                        <th style="padding:10px 8px; text-align:left;">Preço</th>
-                        <th style="padding:10px 8px; text-align:left;">Pred. Base</th>
-                        <th style="padding:10px 8px; text-align:left;">Pred. Ajustada</th>
-                    </tr>
-                </thead>
-                <tbody>{rows_html}</tbody>
-            </table>
-        </div>
-        """, unsafe_allow_html=True)
+        pred_filtrado = predicoes_df.sort_values(score_col, ascending=False).head(50)
 
         # Download
         csv_bytes = pred_filtrado.to_csv(index=False).encode('utf-8')

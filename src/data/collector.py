@@ -331,9 +331,13 @@ class CartolaDataCollector:
         para que o cruzamento H2H funcione corretamente.
         """
         try:
+            import datetime
             data = self.api.get_partidas(rodada)
             conn = sqlite3.connect(self.db_path)
             partidas = data.get('partidas', [])
+
+            # Usa ano da resposta ou ano corrente (ex: 2026)
+            ano_vigente = data.get('temporada') or datetime.datetime.now().year
 
             for partida in partidas:
                 casa_id      = partida.get('clube_casa_id')
@@ -345,29 +349,30 @@ class CartolaDataCollector:
 
                 conn.execute("""
                     INSERT OR REPLACE INTO partidas
-                    (partida_id, rodada,
+                    (partida_id, rodada, ano,
                      clube_casa_id, clube_visitante_id,
                      clube_id_a, clube_id_b,
                      placar_oficial_mandante, placar_oficial_visitante,
                      placar_a, placar_b,
                      aproveitamento_mandante, aproveitamento_visitante, valid)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    partida.get('partida_id'), rodada,
+                    partida.get('partida_id'), rodada, ano_vigente,
                     casa_id, visitante_id,
-                    casa_id, visitante_id,       # clube_id_a / clube_id_b (alias para H2H)
+                    casa_id, visitante_id,
                     placar_casa, placar_visit,
-                    placar_casa, placar_visit,   # placar_a / placar_b (alias para H2H)
+                    placar_casa, placar_visit,
                     aprov_m, aprov_v,
                     partida.get('valid')
                 ))
 
             conn.commit()
             conn.close()
-            logger.info(f"⚽ {len(partidas)} partidas coletadas (com placar H2H) - Rodada {rodada}")
+            logger.info(f"⚽ {len(partidas)} partidas coletadas (Rodada {rodada}/{ano_vigente})")
         except Exception as e:
             logger.error(f"❌ Erro ao coletar partidas: {e}")
             raise
+
 
     @staticmethod
     def _calcular_aproveitamento(aproveitamento) -> float:

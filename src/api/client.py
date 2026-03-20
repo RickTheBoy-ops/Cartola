@@ -58,7 +58,14 @@ class CartolaAPIClient:
         password = password or os.getenv('CARTOLA_PASSWORD')
 
         if not self.glb_token and email and password:
-            self.authenticate(email, password)
+            try:
+                self.authenticate(email, password)
+            except Exception as e:
+                logger.warning(
+                    f"⚠️ Autenticação falhou. Rodando em modo anônimo — "
+                    f"endpoints públicos funcionam normalmente. Detalhe: {e}"
+                )
+                # Não propaga: mercado/status, atletas/mercado e partidas são públicos
 
     def _create_session(self, max_retries: int) -> requests.Session:
         """Cria sessão com retry automático"""
@@ -162,8 +169,15 @@ class CartolaAPIClient:
             raise CartolaAPIError(f"Erro inesperado: {str(e)}")
 
     def authenticate(self, email: str, password: str):
-        """Autentica na API e obtém token"""
-        endpoint = "/auth/dologin"
+        """
+        Autentica via Globo ID e obtém token.
+
+        Nota: desde 2024 o endpoint /auth/dologin foi descontinuado.
+        A nova rota é /auth/authenticate com o mesmo payload.
+        Se falhar, o cliente continua em modo anônimo (endpoints públicos).
+        """
+        # Tentar endpoint atual primeiro, com fallback para o legado
+        endpoints = ["/auth/authenticate", "/auth/dologin"]
         data = {
             "payload": {
                 "email": email,
@@ -172,13 +186,27 @@ class CartolaAPIClient:
             }
         }
 
-        try:
-            response = self._request("POST", endpoint, data=data)
-            self.glb_token = response.get('glb_id')
-            logger.info("🔑 Autenticação realizada com sucesso")
-        except Exception as e:
-            logger.error(f"🔒 Falha na autenticação: {str(e)}")
-            raise
+        last_error = None
+        for endpoint in endpoints:
+            try:
+                response = self._request("POST", endpoint, data=data)
+                self.glb_token = response.get('glb_id') or response.get('glbToken') or response.get('token')
+                if self.glb_token:
+                    logger.info("🔑 Autenticação realizada com sucesso")
+                    return
+                logger.warning(f"Endpoint {endpoint} retornou resposta sem token: {response}")
+            except CartolaAPIError as e:
+                last_error = e
+                logger.debug(f"Auth endpoint {endpoint} falhou: {e}")
+                continue
+
+        # Se todos os endpoints falharam, log e continua anônimo
+        logger.warning(
+            f"⚠️ Login via API não suportado. A Globo desativou o login direto. "
+            f"Último erro: {last_error}. "
+            f"Modo anônimo: endpoints públicos funcionam normalmente."
+        )
+        # Não levanta exceção: pipeline público continua.
 
     # ========== ENDPOINTS PÚBLICOS (com cache) ==========
 

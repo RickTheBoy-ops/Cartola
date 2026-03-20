@@ -93,6 +93,10 @@ class GeneticTeamOptimizer:
         if 'mpv' in predicoes.columns:
             cols_to_merge.append('mpv')
 
+        cols_to_drop = [c for c in cols_to_merge if c in atletas_validos.columns and c != 'atleta_id']
+        if cols_to_drop:
+            atletas_validos = atletas_validos.drop(columns=cols_to_drop)
+
         self.data = atletas_validos.merge(
             predicoes[cols_to_merge],
             on='atleta_id',
