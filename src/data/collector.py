@@ -57,12 +57,21 @@ class CartolaDataCollector:
             except sqlite3.OperationalError:
                 pass
 
+        # Migração estrutural para 'pontuacoes' (adicionar 'ano' e mudar UNIQUE)
+        cursor.execute("PRAGMA table_info(pontuacoes)")
+        pt_cols = [r[1] for r in cursor.fetchall()]
+        needs_migration_pontuacoes = bool(pt_cols and "ano" not in pt_cols)
+        if needs_migration_pontuacoes:
+            logger.info("Executando migration na tabela pontuacoes: adicionando coluna 'ano' e atualizando UNIQUE(ano, rodada, atleta_id)")
+            cursor.execute("ALTER TABLE pontuacoes RENAME TO pontuacoes_old")
+
         # Pontuações
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS pontuacoes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 atleta_id INTEGER,
                 rodada INTEGER,
+                ano INTEGER DEFAULT 2024,
                 pontos REAL,
                 preco REAL,
                 variacao REAL,
@@ -89,15 +98,31 @@ class CartolaDataCollector:
                 minutos_jogados INTEGER,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (atleta_id) REFERENCES atletas(atleta_id),
-                UNIQUE(atleta_id, rodada)
+                UNIQUE(ano, rodada, atleta_id)
             )
         """)
+        
+        if needs_migration_pontuacoes:
+            cursor.execute("PRAGMA table_info(pontuacoes_old)")
+            old_cols = [r[1] for r in cursor.fetchall() if r[1] != 'id']
+            cols_str = ", ".join(old_cols)
+            cursor.execute(f"INSERT INTO pontuacoes ({cols_str}) SELECT {cols_str} FROM pontuacoes_old")
+            cursor.execute("DROP TABLE pontuacoes_old")
+
+        # Migração estrutural para 'partidas' (adicionar 'ano' e mudar UNIQUE)
+        cursor.execute("PRAGMA table_info(partidas)")
+        pa_cols = [r[1] for r in cursor.fetchall()]
+        needs_migration_partidas = bool(pa_cols and "ano" not in pa_cols)
+        if needs_migration_partidas:
+            logger.info("Executando migration na tabela partidas: adicionando coluna 'ano' e atualizando UNIQUE(ano, rodada, clube_casa_id, clube_visitante_id)")
+            cursor.execute("ALTER TABLE partidas RENAME TO partidas_old")
 
         # Partidas — inclui placar_a / placar_b para H2H
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS partidas (
                 partida_id INTEGER PRIMARY KEY,
                 rodada INTEGER,
+                ano INTEGER DEFAULT 2024,
                 clube_casa_id  INTEGER,
                 clube_visitante_id INTEGER,
                 clube_id_a INTEGER,
@@ -110,9 +135,17 @@ class CartolaDataCollector:
                 aproveitamento_visitante REAL,
                 valid BOOLEAN,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(partida_id, rodada)
+                UNIQUE(ano, rodada, clube_casa_id, clube_visitante_id)
             )
         """)
+        
+        if needs_migration_partidas:
+            cursor.execute("PRAGMA table_info(partidas_old)")
+            old_cols = [r[1] for r in cursor.fetchall() if r[1] != 'partida_id']
+            cols_str = ", ".join(old_cols)
+            # partida_id é preservado
+            cursor.execute(f"INSERT INTO partidas (partida_id, {cols_str}) SELECT partida_id, {cols_str} FROM partidas_old")
+            cursor.execute("DROP TABLE partidas_old")
         # Adicionar colunas de H2H em bancos antigos
         for col in [
             "clube_id_a INTEGER",
