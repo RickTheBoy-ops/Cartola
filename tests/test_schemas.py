@@ -39,10 +39,10 @@ def test_atleta_model_invalid_position():
 
 def test_optimization_request_defaults():
     req = OptimizationRequest()
-    assert req.strategy == "mega"
-    assert req.budget == 100.0
+    assert req.strategy == "genetic"  # schema atual usa 'genetic'
+    assert req.budget == 110.0         # padrão no schema é 110 cartoletas
     assert req.formation == "4-3-3"
-    
+
 def test_optimization_request_invalid_budget():
     with pytest.raises(ValueError) as exc:
         OptimizationRequest(budget=-10)

@@ -181,14 +181,27 @@ class GeneticTeamOptimizer:
         - Ultrapassar patrimônio
         - Concentração de jogadores do mesmo clube
         - Jogadores duplicados
+        - Bônus do capitão (MEI/ATA com maior score tem pontos dobrados)
         """
         # Cache
         key = self._team_key(team)
         if key in self._fitness_cache:
             return self._fitness_cache[key]
 
+        # Limpar cache se crescer demais (evitar vazamento de memória)
+        if len(self._fitness_cache) > 50_000:
+            self._fitness_cache.clear()
+
         total_pontos = sum(atleta.get(self.fitness_col, 0) for atleta in team)
         total_preco = sum(atleta.get('preco', 0) for atleta in team)
+
+        # === Bônus do Capitão: MEI (4) ou ATA (5) com maior score tem pontos dobrados ===
+        # Inclui aqui para que o AG otimize o time COM o capitão, não SÓ na exibição
+        capitao_bonus = max(
+            (a.get(self.fitness_col, 0) for a in team if a.get('posicao_id') in [4, 5]),
+            default=0.0
+        )
+        total_pontos += capitao_bonus  # +1x o score do melhor MEI/ATA = pontos dobrados
 
         # === Penalidade: ultrapassar patrimônio ===
         if total_preco > self.patrimonio:
@@ -212,20 +225,21 @@ class GeneticTeamOptimizer:
         for a in team:
             clube_id = a.get('clube_id', 0)
             pos = a.get('posicao_id', 0)
-            
+
             clubes[clube_id] = clubes.get(clube_id, 0) + 1
-            if pos in [1, 2, 3]: # Defesa
+            if pos in [1, 2, 3]:  # Defesa
                 clubes_defesa[clube_id] = clubes_defesa.get(clube_id, 0) + 1
 
         penalidade_clube = 0
         for clube_id, count in clubes.items():
             if count > self.max_mesmo_clube:
-                penalidade_clube += (count - self.max_mesmo_clube) * 5  # Penalidade base
-                
-        # Hardcore Rule: Exposição Defensiva (Max 2 defensores do mesmo time)
+                penalidade_clube += (count - self.max_mesmo_clube) * 5
+
+        # Regra defensiva: respeita max_mesmo_clube, com teto=2 para preservar SG coletiva
+        max_def = min(2, self.max_mesmo_clube)
         for clube_id, count_def in clubes_defesa.items():
-            if count_def > 2:
-                penalidade_clube += (count_def - 2) * 12 # Penalização severa de quebra de SG coletiva
+            if count_def > max_def:
+                penalidade_clube += (count_def - max_def) * 12
 
         # === Penalidade: alta variância (atletas instáveis) ===
         penalidade_variancia = 0
@@ -294,15 +308,22 @@ class GeneticTeamOptimizer:
         return child
 
     def mutate(self, team: List[Dict]) -> List[Dict]:
-        """Mutação: substitui jogador aleatório por outro da mesma posição"""
+        """Mutação: substitui jogador aleatório por outro da mesma posição.
+
+        Inclui todas as posições (GOL, LAT, ZAG, MEI, ATA, TEC) para não
+        fixar goleiro/técnico subótimos nas primeiras gerações.
+        """
         if random.random() > self.mutation_rate:
             return team
 
         team_copy = team.copy()
         used_ids = {a['atleta_id'] for a in team_copy}
 
-        # Pode mutar qualquer posição
-        mutable_positions = [2, 3, 4, 5]
+        # Todas as posições são mutáveis
+        mutable_positions = [p for p in [1, 2, 3, 4, 5, 6]
+                             if len(self.atletas_por_posicao.get(p, [])) > 1]
+        if not mutable_positions:
+            return team_copy
         pos_to_mutate = random.choice(mutable_positions)
 
         team_players = [a for a in team_copy if a['posicao_id'] == pos_to_mutate]
@@ -426,9 +447,8 @@ class GeneticTeamOptimizer:
         team_display = [dict(a) for a in team]
         if capitao_idx != -1:
             team_display[capitao_idx]['apelido'] = str(team_display[capitao_idx].get('apelido', '')) + ' (C)'
-            # Pontos do capitão são dobrados no Cartola:
-            if 'predicao' in team_display[capitao_idx]:
-                team_display[capitao_idx]['predicao'] *= 2.0
+            # Pontos do capitão já são dobrados no fitness().
+            # Aqui só sinalizamos na exibição; não multiplicamos 'predicao' de novo.
 
         df = pd.DataFrame(team_display)
 
