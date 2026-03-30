@@ -34,6 +34,17 @@ except ImportError:
 from .base import OptimizerStrategy
 
 
+# FIX: Probabilidade de troca por posição (antes era 0.45 fixo para todas)
+# GOL é mais estável → menor prob; ATA tem alta variância → maior prob
+_PROB_TROCA_POR_POSICAO = {
+    1: 0.25,  # GOL
+    2: 0.35,  # LAT
+    3: 0.35,  # ZAG
+    4: 0.45,  # MEI
+    5: 0.55,  # ATA
+}
+
+
 class MegaStrategy(OptimizerStrategy):
     """
     Estratégia de otimização usando PuLP (Programação Linear).
@@ -181,7 +192,10 @@ class MegaStrategy(OptimizerStrategy):
                 player_vars[idx] for idx in clube_indices
             ) <= max_per_club
         
-        # RESTRIÇÃO 5: Conflitos de adversários (DEF vs ATK)
+        # RESTRIÇÃO 5: Conflitos de adversários (ZAG/LAT vs ATA/MEI)
+        # FIX: GOL removido do grupo de defensores no conflito.
+        # Goleiro não conflita com atacante adversário — pelo contrário,
+        # um GOL em jogo difícil pode ter boa pontuação com defesas e pegadas.
         if self.config['enable_opponent_conflicts']:
             conflicts = self._get_conflict_pairs(df)
             for idx_i, idx_j in conflicts:
@@ -210,9 +224,13 @@ class MegaStrategy(OptimizerStrategy):
     def _get_conflict_pairs(self, df: pd.DataFrame) -> List[Tuple[int, int]]:
         """
         Identifica pares de jogadores com conflito de adversários.
-        
-        Regra: NÃO escalar defensor + atacante/meia de times adversários diretos.
-        (Ex: Zagueiro PAL + Atacante FLU quando PAL x FLU)
+
+        Regra corrigida: NÃO escalar ZAG/LAT + ATA/MEI de times adversários diretos.
+        GOL foi removido do grupo de defensores — goleiro não conflita com atacante
+        adversário (pode pontuar bem em jogo difícil com defesas e pegadas).
+
+        FIX v1: antes usava posicao_id [1,2,3] como defensores, incluindo GOL.
+                Agora usa apenas [2,3] (LAT e ZAG) como defensores no conflito.
         
         Args:
             df: DataFrame com jogadores
@@ -241,9 +259,10 @@ class MegaStrategy(OptimizerStrategy):
                 if not is_opponents:
                     continue
                 
-                # Conflito: defensor vs atacante/meia
-                pi_def = pi['posicao_id'] in [1, 2, 3]
-                pj_def = pj['posicao_id'] in [1, 2, 3]
+                # FIX: GOL (pos 1) removido do grupo de defensores.
+                # Apenas LAT (2) e ZAG (3) conflitam com ATA/MEI adversários.
+                pi_def = pi['posicao_id'] in [2, 3]  # era [1, 2, 3]
+                pj_def = pj['posicao_id'] in [2, 3]  # era [1, 2, 3]
                 pi_atk = pi['posicao_id'] in [4, 5]
                 pj_atk = pj['posicao_id'] in [4, 5]
                 
@@ -279,8 +298,8 @@ class MegaStrategy(OptimizerStrategy):
               esperado da troca (E[max(titular, reserva)] - E[titular]).
             - A função objetivo maximiza a predição dos titulares +
               (fator_reserva * ganho esperado de cada reserva).
-            - Restrição: reserva deve ser mais barato ou igual ao titular
-              da mesma posição (estratégia custo-benefício comum).
+            - FIX: budget split agora é dinâmico — os titulares usam o orçamento
+              ótimo real, e as reservas ficam com o restante (antes era 80% fixo).
 
         Args:
             df:        DataFrame com atletas, 'mega_score', 'preco', 'posicao_id'
@@ -304,7 +323,15 @@ class MegaStrategy(OptimizerStrategy):
         POSICOES_COM_RESERVA = [1, 2, 3, 4, 5]
 
         # ---- Step 1: encontrar titulares ----
-        titulares = self.optimize(df, budget * 0.80, formation)  # 80% para titulares
+        # FIX: budget dinâmico — tenta alocar o máximo possível para os titulares,
+        # reservando um mínimo razoável para as reservas (5 jogadores baratos).
+        # Antes era fixo em 80%, o que prejudicava orçamentos apertados.
+        RESERVA_MINIMA = 5 * 4.0   # estimativa: 5 reservas a C$4 cada
+        budget_titulares = max(budget - RESERVA_MINIMA, budget * 0.80)
+        titulares = self.optimize(df, budget_titulares, formation)
+        if titulares is None:
+            # Fallback: tenta com orçamento total se o dinâmico falhar
+            titulares = self.optimize(df, budget, formation)
         if titulares is None:
             return None
 
@@ -337,19 +364,21 @@ class MegaStrategy(OptimizerStrategy):
                 (df['posicao_id'] == pos_id) &
                 (~df.index.isin(titulares_idx)) &
                 (df['preco'] <= orcamento_restante) &
-                (df['preco'] <= preco_medio_titular * 1.2)  # Reserva não pode custar muito mais que o titular
+                (df['preco'] <= preco_medio_titular * 1.2)
             ].copy()
 
             if candidatos.empty:
                 continue
 
-            # Calcular EV da reserva:
-            # EV_reserva = E[max(score_titular, score_reserva)] - E[score_titular]
-            # Aproximação: se reserva_score > titular_score → ganho = (reserva - titular) * prob_troca
+            # FIX: probabilidade de troca agora é específica por posição.
+            # GOL é mais estável (0.25), ATA tem alta variância (0.55).
+            # Antes era 0.45 fixo para qualquer posição, distorcendo o ranking de reservas.
+            prob_troca = _PROB_TROCA_POR_POSICAO.get(pos_id, 0.40)
             score_titular_medio = titulares_pos['mega_score'].mean()
+
             candidatos['ev_reserva'] = np.where(
                 candidatos['mega_score'] > score_titular_medio,
-                (candidatos['mega_score'] - score_titular_medio) * 0.45,  # prob ≈ 45% de o reserva superar
+                (candidatos['mega_score'] - score_titular_medio) * prob_troca,
                 candidatos['mega_score'] * 0.10  # piso: seguro mínimo
             )
 
