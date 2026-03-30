@@ -213,7 +213,7 @@ hr.custom { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 3
     justify-content: center;
     font-size: 1.2rem;
     margin-bottom: 12px;
-    box-shadow: 0 0 0 4px #0f1117; /* Fake gap with background color */
+    box-shadow: 0 0 0 4px #0f1117;
 }
 .timeline-title {
     font-weight: 700;
@@ -226,6 +226,21 @@ hr.custom { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 3
     color: #8b949e;
     line-height: 1.4;
 }
+
+/* Web Research badge */
+.web-badge {
+    display: inline-block;
+    background: #1a2a3a;
+    border: 1px solid #58a6ff;
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 0.72rem;
+    color: #79c0ff;
+    font-weight: 600;
+    margin: 2px;
+}
+.web-badge.ok  { border-color: #39d353; color: #aff5b4; background: #1a3a2a; }
+.web-badge.err { border-color: #ff7b72; color: #ffc1bc; background: #3a1a1a; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -269,9 +284,9 @@ def info_banco():
     conn = sqlite3.connect(db)
     try:
         info = {}
-        info['n_atletas']  = pd.read_sql("SELECT COUNT(*) as n FROM atletas", conn).iloc[0,0]
+        info['n_atletas']    = pd.read_sql("SELECT COUNT(*) as n FROM atletas", conn).iloc[0,0]
         info['n_pontuacoes'] = pd.read_sql("SELECT COUNT(*) as n FROM pontuacoes", conn).iloc[0,0]
-        info['rodadas']    = pd.read_sql("SELECT DISTINCT rodada FROM pontuacoes ORDER BY rodada DESC LIMIT 1", conn)
+        info['rodadas']      = pd.read_sql("SELECT DISTINCT rodada FROM pontuacoes ORDER BY rodada DESC LIMIT 1", conn)
         info['ultima_rodada'] = int(info['rodadas'].iloc[0,0]) if len(info['rodadas'])>0 else None
         conn.close()
         return info
@@ -281,12 +296,76 @@ def info_banco():
 
 
 def get_season_year() -> int:
-    """Retorna o ano da temporada a partir da config.
-
-    Mantém compatibilidade com bancos antigos onde o ano default é 2024.
-    """
     cfg = carregar_config()
     return int(cfg.get("season", {}).get("year", 2024))
+
+
+# ─────────────────────────────────────────────────────────────
+# HELPER: WEB RESEARCH — roda pesquisa e exibe expander com resultados
+# ─────────────────────────────────────────────────────────────
+def executar_pesquisa_web(atletas_df: pd.DataFrame, log_fn, progress_obj) -> dict:
+    """
+    Executa pesquisa web multi-fonte (12 fontes por jogador/time) para todos
+    os atletas do mercado atual.  Retorna o dicionário com:
+      - pesquisas        : {nome: PesquisaJogador}
+      - pesquisas_times  : {time: PesquisaTime}
+      - contexto_completo: str  (pronto para injetar no prompt)
+      - noticias_desfalques: [str]
+    """
+    try:
+        from src.research.web_research import pesquisar_rodada_completa
+    except ImportError as e:
+        log_fn(f"Módulo web_research não encontrado: {e} — pulando pesquisa", "warn")
+        return {"jogadores": {}, "times": {}, "contexto_completo": "", "noticias_desfalques": []}
+
+    # Prepara lista de jogadores
+    col_nome  = 'apelido'  if 'apelido'  in atletas_df.columns else 'nome'
+    col_time  = 'clube_id' if 'clube_id' in atletas_df.columns else None
+
+    # Pega top 40 por média (não faz sentido pesquisar 800 jogadores)
+    col_media = 'media' if 'media' in atletas_df.columns else atletas_df.columns[0]
+    top_atletas = atletas_df.nlargest(40, col_media) if col_media in atletas_df.columns else atletas_df.head(40)
+
+    jogadores_payload = [
+        {"nome": row[col_nome], "time": str(row.get(col_time, "")) if col_time else ""}
+        for _, row in top_atletas.iterrows()
+        if str(row.get(col_nome, "")).strip()
+    ]
+
+    times_unicos = list(set(str(j["time"]) for j in jogadores_payload if j["time"]))
+
+    log_fn(f"🔍 Iniciando pesquisa web: {len(jogadores_payload)} jogadores × 12 fontes...", "info")
+    progress_obj.progress(28, "🌐 Pesquisando jogadores na web (Sofascore, GE, Google News...)")
+
+    try:
+        resultado = pesquisar_rodada_completa(
+            jogadores=jogadores_payload,
+            times=times_unicos,
+        )
+    except Exception as exc:
+        log_fn(f"Pesquisa web falhou: {exc} — continuando sem contexto extra", "warn")
+        return {"jogadores": {}, "times": {}, "contexto_completo": "", "noticias_desfalques": []}
+
+    # Detecta alertas de desfalque
+    palavras_alerta = ["lesao", "lesão", "desfalque", "suspenso", "contundido", "dúvida", "duvida"]
+    noticias_desfalques = []
+    for nome_j, pj in resultado.get("jogadores", {}).items():
+        for r in pj.resultados:
+            if r.status == "ok" and any(p in r.conteudo_bruto.lower() for p in palavras_alerta):
+                noticias_desfalques.append(f"{nome_j} [{r.fonte}]: {r.conteudo_bruto[:180]}")
+
+    resultado["noticias_desfalques"] = noticias_desfalques
+
+    n_ok  = sum(pj.fontes_sucesso for pj in resultado.get("jogadores", {}).values())
+    n_tot = sum(pj.fontes_consultadas for pj in resultado.get("jogadores", {}).values())
+    log_fn(
+        f"✅ Pesquisa web: {len(resultado.get('jogadores', {}))} jogadores | "
+        f"{len(resultado.get('times', {}))} times | "
+        f"{n_ok}/{n_tot} respostas | {len(noticias_desfalques)} alertas de desfalque",
+        "ok"
+    )
+    return resultado
+
 
 # ─────────────────────────────────────────────────────────────
 # SIDEBAR — CONFIGURAÇÕES
@@ -324,14 +403,22 @@ with st.sidebar:
             help="Define o algoritmo que vai montar o time ideal."
         )
 
+    with st.expander("Pesquisa Web", expanded=False):
+        usar_pesquisa_web = st.toggle(
+            "🌐 Ativar pesquisa web",
+            value=True,
+            help="Pesquisa 12 fontes por jogador (Sofascore, GE, Google News, Transfermarkt, Cartoleiro, etc.) antes de gerar a escalação."
+        )
+        st.caption("Top 40 atletas são pesquisados em paralelo. Adiciona ~20s ao pipeline.")
+
     with st.expander("Parâmetros Genéticos", expanded=False):
         cfg = carregar_config()
         opt_cfg = cfg.get('optimizer', {})
 
-        population_size = st.slider("Tamanho da População",  100, 500, opt_cfg.get('population_size', 250), 50, help="Quantos times avaliar por geração. Valores altos encontram times melhores mas são mais lentos.")
-        generations     = st.slider("Gerações",    50, 300, opt_cfg.get('generations', 150), 25, help="Qtd de iterações do algoritmo. Mais gerações = melhor otimização.")
-        mutation_rate   = st.slider("Taxa de Mutação", 0.05, 0.40, opt_cfg.get('mutation_rate', 0.20), 0.05, help="Probabilidade de um jogador do time ser trocado por outro aleatório.")
-        max_mesmo_clube = st.slider("Máx. Jogadores do mesmo Clube", 1, 5, opt_cfg.get('max_mesmo_clube', 3), 1, help="Evita times inteiros de uma só equipe, mitigando risco de revés.")
+        population_size = st.slider("Tamanho da População",  100, 500, opt_cfg.get('population_size', 250), 50)
+        generations     = st.slider("Gerações",    50, 300, opt_cfg.get('generations', 150), 25)
+        mutation_rate   = st.slider("Taxa de Mutação", 0.05, 0.40, opt_cfg.get('mutation_rate', 0.20), 0.05)
+        max_mesmo_clube = st.slider("Máx. Jogadores do mesmo Clube", 1, 5, opt_cfg.get('max_mesmo_clube', 3), 1)
 
     with st.expander("Status da API / Banco", expanded=False):
         info = info_banco()
@@ -346,7 +433,7 @@ with st.sidebar:
             """, unsafe_allow_html=True)
         else:
             st.markdown('<div class="alert-warning">⚠️ Banco de dados não encontrado.</div>', unsafe_allow_html=True)
-            
+
     st.markdown("<br>", unsafe_allow_html=True)
     realizar_analise_sidebar = st.button("▶ Executar Análise", type="primary", use_container_width=True)
 
@@ -356,16 +443,17 @@ with st.sidebar:
 st.markdown("""
 <div class="hero-header">
     <h1>Cartola FC · Optimizer AI</h1>
-    <p>Otimize sua escalação usando Machine Learning, Pesos Táticos e Algoritmos de Elite.</p>
+    <p>Otimize sua escalação usando Machine Learning, Pesos Táticos, Algoritmos de Elite e Pesquisa Web em 12 fontes.</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
 # ABAS PRINCIPAIS
 # ─────────────────────────────────────────────────────────────
-tab_home, tab_analise, tab_time, tab_historico = st.tabs([
+tab_home, tab_analise, tab_pesquisa_web, tab_time, tab_historico = st.tabs([
     "🏠 Início",
     "📊 Análise da Rodada",
+    "🌐 Pesquisa Web",
     "🏆 Time Otimizado",
     "📈 Histórico"
 ])
@@ -390,35 +478,41 @@ with tab_home:
     st.markdown("<hr class='custom'>", unsafe_allow_html=True)
 
     st.markdown("### Onde a Magia Acontece 🚀")
-    
-    col_a, col_b, col_c = st.columns(3)
+    col_a, col_b, col_c, col_d = st.columns(4)
     with col_a:
         st.markdown("""
         <div class="instruction-card">
             <div class="instruction-icon">📡</div>
             <div class="instruction-title">Coleta em Tempo Real</div>
-            <div class="instruction-text">Buscamos dados de mercado, atletas prováveis e partidas da rodada diretamente da API oficial da Globo.</div>
+            <div class="instruction-text">Dados de mercado, atletas e partidas da API oficial da Globo.</div>
         </div>
         """, unsafe_allow_html=True)
     with col_b:
         st.markdown("""
         <div class="instruction-card">
-            <div class="instruction-icon">🧠</div>
-            <div class="instruction-title">Estatística + ML</div>
-            <div class="instruction-text">Aplicamos modelos (RF/GBM) no histórico buscando padrões e geramos 18+ features (mando, fase, probabilidade de SG).</div>
+            <div class="instruction-icon">🌐</div>
+            <div class="instruction-title">Pesquisa Web 12 Fontes</div>
+            <div class="instruction-text">Sofascore, GE, Google News, Transfermarkt, Cartoleiro, RedaNão, Terrão e mais — em paralelo.</div>
         </div>
         """, unsafe_allow_html=True)
     with col_c:
         st.markdown("""
         <div class="instruction-card">
+            <div class="instruction-icon">🧠</div>
+            <div class="instruction-title">Estatística + ML</div>
+            <div class="instruction-text">Modelos RF/GBM no histórico com 18+ features (mando, fase, probabilidade de SG).</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_d:
+        st.markdown("""
+        <div class="instruction-card">
             <div class="instruction-icon">🧬</div>
             <div class="instruction-title">Genética & Tática</div>
-            <div class="instruction-text">Usamos inteligência artificial evolutiva para combinar milhões de escalações até encontrar a matemática perfeita pro seu orçamento.</div>
+            <div class="instruction-text">IA evolutiva combina milhões de escalações até encontrar o time perfeito pro seu orçamento.</div>
         </div>
         """, unsafe_allow_html=True)
 
     st.markdown("<hr class='custom'>", unsafe_allow_html=True)
-    
     st.markdown("### Pipeline de Execução Passo a Passo")
     st.markdown("""
     <div class="timeline-container">
@@ -429,59 +523,56 @@ with tab_home:
         </div>
         <div class="timeline-step">
             <div class="timeline-icon">2</div>
+            <div class="timeline-title">Pesquisa Web</div>
+            <div class="timeline-desc">12 fontes por jogador</div>
+        </div>
+        <div class="timeline-step">
+            <div class="timeline-icon">3</div>
             <div class="timeline-title">Feature Engineering</div>
             <div class="timeline-desc">Transformação de Dados</div>
         </div>
         <div class="timeline-step">
-            <div class="timeline-icon">3</div>
+            <div class="timeline-icon">4</div>
             <div class="timeline-title">Treinamento ML</div>
             <div class="timeline-desc">Previsão de Pontos</div>
         </div>
         <div class="timeline-step">
-            <div class="timeline-icon">4</div>
+            <div class="timeline-icon">5</div>
             <div class="timeline-title">Estratégia Tática</div>
-            <div class="timeline-desc">Multiplicadores do Especialista</div>
+            <div class="timeline-desc">Multiplicadores</div>
         </div>
         <div class="timeline-step">
-            <div class="timeline-icon">5</div>
+            <div class="timeline-icon">6</div>
             <div class="timeline-title">AG Otimizador</div>
             <div class="timeline-desc">Evolução do Time</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
-    
+
     st.markdown("<hr class='custom'>", unsafe_allow_html=True)
-    
-    st.markdown("### Características Táticas (Pesos)")
-    tactics_data = [
-        {"Condição": "Atacante x Defesa Fraca", "Impacto": "+30% Pontos"},
-        {"Condição": "Meia x Defesa Fraca", "Impacto": "+25% Pontos"},
-        {"Condição": "Qualquer Posição em Casa", "Impacto": "+10% Pontos"},
-        {"Condição": "Zagueiro com alta prob. de SG", "Impacto": "+15% Pontos"},
-        {"Condição": "Mais de 3 jogadores do mesmo clube", "Impacto": "Penalidade Severa"},
-        {"Condição": "Jogadores de times adversários (mesmo jogo)", "Impacto": "Penalidade Severa (Anti-Confronto)"},
+    st.markdown("### Fontes de Pesquisa Web")
+    fontes_data = [
+        {"Fonte": "🟡 Cartola API Oficial", "Dados": "Preço, média, variação, pontos na rodada"},
+        {"Fonte": "🟢 Sofascore",          "Dados": "Rating, stats avançados, busca por nome"},
+        {"Fonte": "🔵 GE Globo",           "Dados": "Notícias, entrevistas, desfalques"},
+        {"Fonte": "🔴 Google News RSS",    "Dados": "Últimas notícias (jogador + time)"},
+        {"Fonte": "⚫ Transfermarkt",      "Dados": "Valor de mercado, histórico de contusões"},
+        {"Fonte": "🟠 Flashscore",         "Dados": "Forma recente, últimas partidas"},
+        {"Fonte": "🟣 Cartoleiro",         "Dados": "Dicas especializadas Cartola"},
+        {"Fonte": "🔵 RedaNão",            "Dados": "Análise de mercado Cartola"},
+        {"Fonte": "🟢 Terrão do Cartola",  "Dados": "Parciais de scouts, variação de preço"},
+        {"Fonte": "🟡 ESPN Brasil",        "Dados": "Escalação provável do time"},
+        {"Fonte": "⚫ WhoScored",          "Dados": "Rating e heatmap"},
+        {"Fonte": "🔵 GE (aba do time)",   "Dados": "Lesões, elenco, situação do time"},
     ]
-    tactics_df = pd.DataFrame(tactics_data)
-    
-    def highlight_impact(val: str) -> str:
-        if "+" in str(val):
-            return 'color: #00d669; font-weight: bold'
-        elif "Penalidade" in str(val):
-            return 'color: #ff7b72; font-weight: bold'
-        return ''
-        
-    st.dataframe(
-        tactics_df.style.applymap(highlight_impact, subset=['Impacto']),
-        use_container_width=True,
-        hide_index=True
-    )
+    st.dataframe(pd.DataFrame(fontes_data), use_container_width=True, hide_index=True)
 
 # ══════════════════════════════════════════════════════════════
 # ABA ANÁLISE DA RODADA
 # ══════════════════════════════════════════════════════════════
 with tab_analise:
 
-    st.markdown("ℹ️ *A análise central agora é iniciada pelo botão 'Executar Análise' na barra lateral.*")
+    st.markdown("ℹ️ *A análise central é iniciada pelo botão **▶ Executar Análise** na barra lateral.*")
 
     if realizar_analise_sidebar:
         with st.spinner("Inicializando pipeline..."):
@@ -501,10 +592,10 @@ with tab_analise:
                 from dotenv import load_dotenv
                 load_dotenv(ROOT_DIR / ".env")
 
-                EMAIL     = os.getenv('CARTOLA_EMAIL')
-                PASSWORD  = os.getenv('CARTOLA_PASSWORD')
-                PATRIMONIO = patrimonio
-                FORMACAO   = formacao
+                EMAIL         = os.getenv('CARTOLA_EMAIL')
+                PASSWORD      = os.getenv('CARTOLA_PASSWORD')
+                PATRIMONIO    = patrimonio
+                FORMACAO      = formacao
                 ANO_TEMPORADA = get_season_year()
 
                 # ── 1. API Client ──────────────────────────────
@@ -529,12 +620,12 @@ with tab_analise:
 
                 rodada_atual = mercado_info['rodada_atual']
                 log(f"Rodada {rodada_atual} — mercado {'ABERTO' if mercado_info.get('mercado_aberto') else 'FECHADO'}", "ok")
-                progress.progress(25, "👥 Coletando atletas...")
+                progress.progress(22, "👥 Coletando atletas...")
 
                 atletas_df = collector.collect_atletas_mercado(rodada_atual)
                 log(f"{len(atletas_df)} atletas coletados", "ok")
 
-                # Salvar mapa de clubes e partidas no estado da sessão
+                # Mapa de clubes
                 _raw_mercado = api_client.get_atletas_mercado()
                 _clubes_raw  = _raw_mercado.get('clubes', {})
                 clubes_map_full = {
@@ -545,15 +636,24 @@ with tab_analise:
                     int(k): v.get('abreviacao', v.get('nome', str(k))[:3].upper())
                     for k, v in _clubes_raw.items()
                 } if isinstance(_clubes_raw, dict) else {}
-                st.session_state['clubes_map']  = clubes_map_full
-                st.session_state['abrev_map']   = abrev_map
+                st.session_state['clubes_map'] = clubes_map_full
+                st.session_state['abrev_map']  = abrev_map
 
                 collector.collect_partidas(rodada_atual)
-                progress.progress(35, "📚 Carregando histórico...")
 
-                # ── 3. Histórico ───────────────────────────────
+                # ── 3. PESQUISA WEB (nova etapa) ───────────────
+                resultado_web = {"jogadores": {}, "times": {}, "contexto_completo": "", "noticias_desfalques": []}
+                if usar_pesquisa_web:
+                    resultado_web = executar_pesquisa_web(atletas_df, log, progress)
+                    st.session_state['resultado_web'] = resultado_web
+                else:
+                    log("Pesquisa web desativada — pulando etapa", "warn")
+                    st.session_state['resultado_web'] = resultado_web
+
+                progress.progress(40, "📚 Carregando histórico...")
+
+                # ── 4. Histórico ───────────────────────────────
                 conn = sqlite3.connect(str(collector.db_path))
-                
                 historico_df = pd.read_sql_query("""
                     SELECT p.*, a.clube_id FROM pontuacoes p
                     JOIN atletas a ON p.atleta_id = a.atleta_id
@@ -566,10 +666,9 @@ with tab_analise:
                 """, conn, params=(ANO_TEMPORADA, max(1, rodada_atual - 15), rodada_atual))
                 conn.close()
 
-                # Mapa clube_id → partida da rodada (mandante vs visitante)
                 _pm = {}
                 for _, _pr in partidas_df[partidas_df['rodada'] == rodada_atual].iterrows():
-                    _cid_a = int(_pr['clube_casa_id']) if _pr['clube_casa_id'] else 0
+                    _cid_a = int(_pr['clube_casa_id'])      if _pr['clube_casa_id']      else 0
                     _cid_b = int(_pr['clube_visitante_id']) if _pr['clube_visitante_id'] else 0
                     _ab    = abrev_map
                     _jogo  = f"{_ab.get(_cid_a, str(_cid_a))} 🏟️ vs {_ab.get(_cid_b, str(_cid_b))}"
@@ -579,26 +678,24 @@ with tab_analise:
 
                 log(f"{len(historico_df)} registros de pontuação | {len(partidas_df)} partidas", "ok")
 
-                # Filtrar sem jogo
                 atletas_df = filtrar_atletas_com_jogo(atletas_df, rodada_atual, partidas_df)
                 log(f"{len(atletas_df)} atletas com jogo confirmado na rodada {rodada_atual}", "ok")
 
-                progress.progress(45, "🔧 Feature engineering...")
+                progress.progress(50, "🔧 Feature engineering...")
 
-                # ── 4. Features ────────────────────────────────
+                # ── 5. Features ────────────────────────────────
                 from src.ml.features import FeatureEngineer
                 if len(historico_df) > 0:
                     historico_df = FeatureEngineer.engineer_all_features(historico_df, partidas_df)
-                    n_features = historico_df.shape[1]
-                    log(f"Feature engineering concluído: {n_features} colunas", "ok")
+                    log(f"Feature engineering: {historico_df.shape[1]} colunas", "ok")
                 else:
                     log("Sem histórico para feature engineering", "warn")
 
-                progress.progress(55, "🧠 Treinando modelo ML...")
+                progress.progress(60, "🧠 Treinando modelo ML...")
 
-                # ── 5. Treinar ─────────────────────────────────
+                # ── 6. Treinar ─────────────────────────────────
                 from src.ml.predictor import CartolaPredictor, ValorizacaoPredictor
-                predictor = CartolaPredictor(model_type=model_key)
+                predictor     = CartolaPredictor(model_type=model_key)
                 val_predictor = ValorizacaoPredictor(model_type='gb')
 
                 dados_treino = historico_df[historico_df['rodada'] < rodada_atual] if len(historico_df) > 0 else pd.DataFrame()
@@ -608,23 +705,20 @@ with tab_analise:
                     metrics = predictor.train(dados_treino, validate=True)
                     log(f"Modelo treinado — MAE: {metrics['mae']:.2f} | R²: {metrics['r2']:.3f}", "ok")
 
-                    # Treinar Valorização
                     val_samples = FeatureEngineer.create_valorizacao_samples(historico_df)
                     if len(val_samples) >= ValorizacaoPredictor.HISTORICO_MINIMO:
                         val_metrics = val_predictor.train(val_samples, validate=False)
                         log(f"Modelo Valorização — MAE: {val_metrics['mae']:.2f} | R²: {val_metrics['r2']:.3f}", "ok")
                     else:
                         log("Histórico insuficiente para Treinar Valorização.", "warn")
-
                 else:
                     log(f"Histórico insuficiente ({len(dados_treino)} registros). Usando heurística.", "warn")
 
-                progress.progress(68, "🎯 Predizendo próxima rodada...")
+                progress.progress(72, "🎯 Predizendo próxima rodada...")
 
-                # ── 6. Predição ────────────────────────────────
+                # ── 7. Predição ────────────────────────────────
                 if can_train and predictor.is_trained:
-                    ultimos = historico_df.sort_values('rodada').groupby('atleta_id').tail(5)
-                    ultimos = ultimos.copy()
+                    ultimos = historico_df.sort_values('rodada').groupby('atleta_id').tail(5).copy()
                     ultimos['pontos_ewm_local'] = (
                         ultimos.groupby('atleta_id')['pontos']
                         .transform(lambda x: x.ewm(span=3, min_periods=1).mean())
@@ -646,23 +740,21 @@ with tab_analise:
                         predicoes_df['predicao_ajustada'] = predicoes_df['predicao']
                         log("Predição base (features táticas indisponíveis)", "warn")
 
-                    # Prever valorização
                     if val_predictor.is_trained:
                         val_pred_df = val_predictor.predict(dados_pred)
                         predicoes_df['esperanca_valorizacao'] = val_pred_df['esperanca_valorizacao']
-                        log("Predição de Valorização (Cartoletas) gerada", "ok")
+                        log("Predição de Valorização gerada", "ok")
                     else:
                         predicoes_df['esperanca_valorizacao'] = 0.0
-
                 else:
                     predicoes_df = CartolaPredictor.fallback_heuristica(atletas_df)
                     predicoes_df['predicao_ajustada'] = predicoes_df['predicao']
                     predicoes_df['esperanca_valorizacao'] = 0.0
 
                 log(f"Predições geradas para {len(predicoes_df)} atletas", "ok")
-                progress.progress(82, "🧬 Otimizando time genético...")
+                progress.progress(84, "🧬 Otimizando time genético...")
 
-                # ── 7. Otimizador Factory ──────────────────────────────
+                # ── 8. Otimizador ──────────────────────────────
                 from src.optimizer.factory import CartolaOptimizer
 
                 predicoes_opt = predicoes_df.copy()
@@ -673,8 +765,10 @@ with tab_analise:
                 score_col = 'predicao_ajustada' if 'predicao_ajustada' in predicoes_opt.columns else 'predicao'
                 predicoes_opt['predicao'] = predicoes_opt[score_col]
 
-                # Juntar para o formato que a factory e outras strategies esperam
-                df_for_opt = atletas_df.merge(predicoes_opt[['atleta_id', 'predicao', 'predicao_std', 'esperanca_valorizacao']], on='atleta_id', how='left')
+                df_for_opt = atletas_df.merge(
+                    predicoes_opt[['atleta_id', 'predicao', 'predicao_std', 'esperanca_valorizacao']],
+                    on='atleta_id', how='left'
+                )
                 df_for_opt['mega_score'] = df_for_opt['predicao']
 
                 opt_config = {
@@ -687,47 +781,37 @@ with tab_analise:
                 }
 
                 optimizer = CartolaOptimizer(strategy=selected_strategy, config=opt_config)
-                # Passar partidas da rodada para ativar regra anti-confronto
                 _partidas_rodada_df = partidas_df[partidas_df['rodada'] == rodada_atual] if len(partidas_df) > 0 else pd.DataFrame()
                 lineup = optimizer.optimize(df_for_opt, PATRIMONIO, FORMACAO, partidas_df=_partidas_rodada_df)
 
                 if lineup is None or len(lineup) < 12:
-                     raise Exception(f"Não foi possível gerar time viável com a estratégia '{selected_strategy}'. Tente relaxar os filtros.")
+                    raise Exception(f"Não foi possível gerar time viável com '{selected_strategy}'. Tente relaxar os filtros.")
 
                 best_team = lineup.to_dict('records')
-                
                 val_score = float(lineup['predicao'].sum()) if 'predicao' in lineup.columns else float(lineup['mega_score'].sum())
                 val_preco = float(lineup['preco'].sum())
-                
                 stats = {
                     'total_pontos_preditos': val_score,
                     'total_preco': val_preco,
                     'patrimonio_usado': (val_preco / PATRIMONIO) * 100 if PATRIMONIO > 0 else 0,
                 }
 
-                # Formatar
                 from src.ml.optimizer import POSICOES
                 display_df = lineup.copy()
                 if 'posicao_nome' not in display_df.columns:
                     display_df['posicao_nome'] = display_df['posicao_id'].map(POSICOES)
-                
-                cols_to_show = []
-                for c in ['apelido', 'posicao_nome', 'clube_id', 'preco', 'predicao', 'media']:
-                    if c in display_df.columns:
-                        cols_to_show.append(c)
+
+                cols_to_show = [c for c in ['apelido', 'posicao_nome', 'clube_id', 'preco', 'predicao', 'media'] if c in display_df.columns]
                 team_df = display_df[cols_to_show]
 
                 log(f"Time otimizado ({selected_strategy}): {stats['total_pontos_preditos']:.1f} pts | C$ {stats['total_preco']:.1f}", "ok")
 
-                # Salvar CSV
                 out = ROOT_DIR / "data" / "processed"
                 out.mkdir(parents=True, exist_ok=True)
                 team_df.to_csv(out / "time_sugerido.csv", index=False)
                 predicoes_df.to_csv(out / "predicoes_rodada.csv", index=False)
 
-                # Persistir a escalação no SQLite para avaliação posterior (sem IA)
                 try:
-                    from src.data.collector import CartolaDataCollector
                     collector.salvar_escalacao(
                         ano=ANO_TEMPORADA,
                         rodada=rodada_atual,
@@ -735,15 +819,14 @@ with tab_analise:
                         formacao=FORMACAO,
                         patrimonio=PATRIMONIO,
                         lineup_df=lineup,
-                        capitao_id=None,  # capitão ainda não é destacado no pipeline
+                        capitao_id=None,
                     )
                     log("Escalação salva em 'escalacoes' para avaliação futura", "ok")
                 except Exception as ex:
-                    log(f"Não foi possível salvar a escalação em 'escalacoes': {ex}", "warn")
+                    log(f"Não foi possível salvar escalação: {ex}", "warn")
 
                 progress.progress(100, "✅ Concluído!")
 
-                # ── Persistir no session_state ─────────────────
                 st.session_state['predicoes_df'] = predicoes_df
                 st.session_state['team_df']      = team_df
                 st.session_state['best_team']    = best_team
@@ -753,78 +836,159 @@ with tab_analise:
                 st.session_state['executado']    = True
                 st.session_state['historico_df'] = historico_df
 
-                st.markdown('<div class="alert-success">✅ Pipeline concluído com sucesso! Veja as abas <b>Análise</b> e <b>Time Otimizado</b>.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="alert-success">✅ Pipeline concluído! Veja as abas <b>🌐 Pesquisa Web</b> e <b>🏆 Time Otimizado</b>.</div>', unsafe_allow_html=True)
 
             except sqlite3.Error as db_e:
-                logging.error(f"Erro de Banco de Dados: {db_e}", exc_info=True)
-                st.markdown(f'<div class="alert-error">🗄️ Erro ao acessar a Base de Dados do Cartola: {db_e}</div>', unsafe_allow_html=True)
+                logging.error(f"Erro BD: {db_e}", exc_info=True)
+                st.markdown(f'<div class="alert-error">🗄️ Erro BD: {db_e}</div>', unsafe_allow_html=True)
             except ValueError as ve:
-                logging.error(f"Erro de Validação de Dados: {ve}", exc_info=True)
-                st.markdown(f'<div class="alert-error">⚠️ Erro nos dados processados: {ve}</div>', unsafe_allow_html=True)
+                logging.error(f"Erro validação: {ve}", exc_info=True)
+                st.markdown(f'<div class="alert-error">⚠️ {ve}</div>', unsafe_allow_html=True)
             except Exception as e:
-                logging.error(f"Falha inesperada no pipeline: {e}", exc_info=True)
+                logging.error(f"Falha pipeline: {e}", exc_info=True)
                 import traceback
-                st.markdown(f'<div class="alert-error">❌ Erro Inesperado no Pipeline: {e}</div>', unsafe_allow_html=True)
-                with st.expander("🔍 Detalhes do erro (Modo Desenvolvedor)"):
+                st.markdown(f'<div class="alert-error">❌ {e}</div>', unsafe_allow_html=True)
+                with st.expander("🔍 Detalhes do erro"):
                     st.code(traceback.format_exc())
 
-    # ── Resultado da análise (persiste por sessão) ─────────
     if st.session_state.get('executado'):
         predicoes_df = st.session_state['predicoes_df']
         rodada_atual  = st.session_state['rodada']
-
         st.markdown("<hr class='custom'>", unsafe_allow_html=True)
-        st.success("✅ Análise e otimização concluídas com sucesso! Clique na aba **🏆 Time Otimizado** acima para ver os 12 jogadores escalados.")
-
+        st.success("✅ Pipeline concluído! Clique em **🏆 Time Otimizado** para ver os 12 jogadores.")
         score_col = 'predicao_ajustada' if 'predicao_ajustada' in predicoes_df.columns else 'predicao'
         pred_filtrado = predicoes_df.sort_values(score_col, ascending=False).head(50)
-
-        # Download
         csv_bytes = pred_filtrado.to_csv(index=False).encode('utf-8')
         st.download_button(
-            "⬇️  Baixar predições (.csv)", csv_bytes,
+            "⬇️ Baixar predições (.csv)", csv_bytes,
             file_name=f"predicoes_rodada_{rodada_atual}.csv",
             mime="text/csv", use_container_width=True
         )
+
+# ══════════════════════════════════════════════════════════════
+# ABA PESQUISA WEB  ← NOVA
+# ══════════════════════════════════════════════════════════════
+with tab_pesquisa_web:
+    resultado_web = st.session_state.get('resultado_web', {})
+
+    if not resultado_web or not resultado_web.get('jogadores'):
+        st.markdown('<div class="alert-info">ℹ️ Execute a análise com a <b>Pesquisa Web ativada</b> para ver os dados aqui.</div>', unsafe_allow_html=True)
+    else:
+        jogadores_web = resultado_web.get('jogadores', {})
+        times_web     = resultado_web.get('times', {})
+        desfalques    = resultado_web.get('noticias_desfalques', [])
+
+        # ── KPIs ───────────────────────────────────────────
+        total_fontes_ok  = sum(pj.fontes_sucesso for pj in jogadores_web.values())
+        total_fontes_tot = sum(pj.fontes_consultadas for pj in jogadores_web.values())
+        taxa = (total_fontes_ok / total_fontes_tot * 100) if total_fontes_tot else 0
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("👤 Jogadores pesquisados", len(jogadores_web))
+        c2.metric("🏟️ Times pesquisados",    len(times_web))
+        c3.metric("✅ Respostas com sucesso", f"{total_fontes_ok}/{total_fontes_tot}")
+        c4.metric("⚠️ Alertas de desfalque", len(desfalques))
+
+        # ── Alertas de desfalque ───────────────────────────
+        if desfalques:
+            st.markdown("<hr class='custom'>", unsafe_allow_html=True)
+            st.markdown("### ⚠️ Alertas de Desfalque / Lesão")
+            for alerta in desfalques[:15]:
+                st.markdown(f'<div class="alert-warning">⚠️ {alerta}</div>', unsafe_allow_html=True)
+                st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Detalhe por jogador ────────────────────────────
+        st.markdown("<hr class='custom'>", unsafe_allow_html=True)
+        st.markdown("### 👤 Detalhe por Jogador")
+
+        nomes_jogadores = list(jogadores_web.keys())
+        jogador_sel = st.selectbox("Selecione o jogador", nomes_jogadores)
+
+        if jogador_sel:
+            pj = jogadores_web[jogador_sel]
+            st.markdown(f"**{pj.nome}** ({pj.time}) — `{pj.fontes_sucesso}/{pj.fontes_consultadas}` fontes com sucesso")
+
+            for r in sorted(pj.resultados, key=lambda x: x.status):
+                status_cls = "ok" if r.status == "ok" else "err"
+                status_emoji = "✅" if r.status == "ok" else "❌" if r.status == "erro" else "⚪"
+                with st.expander(f"{status_emoji} [{r.fonte.upper()}] — {r.status.upper()} ({r.tempo_ms:.0f}ms)"):
+                    if r.conteudo_bruto:
+                        st.text_area("Conteúdo extraído", r.conteudo_bruto[:1200], height=120, key=f"{jogador_sel}_{r.fonte}")
+                    elif r.erro:
+                        st.caption(f"Erro: {r.erro}")
+                    else:
+                        st.caption("Sem conteúdo")
+                    if r.url:
+                        st.caption(f"URL: {r.url}")
+
+        # ── Detalhe por time ───────────────────────────────
+        if times_web:
+            st.markdown("<hr class='custom'>", unsafe_allow_html=True)
+            st.markdown("### 🏟️ Detalhe por Time")
+            time_sel = st.selectbox("Selecione o time", list(times_web.keys()))
+            if time_sel:
+                pt = times_web[time_sel]
+                st.markdown(f"**{pt.nome}** — `{pt.fontes_sucesso}/{pt.fontes_consultadas}` fontes")
+                for r in sorted(pt.resultados, key=lambda x: x.status):
+                    status_emoji = "✅" if r.status == "ok" else "❌" if r.status == "erro" else "⚪"
+                    with st.expander(f"{status_emoji} [{r.fonte.upper()}]"):
+                        if r.conteudo_bruto:
+                            st.text_area("", r.conteudo_bruto[:1000], height=100, key=f"time_{time_sel}_{r.fonte}")
+                        elif r.erro:
+                            st.caption(f"Erro: {r.erro}")
+                        if r.url:
+                            st.caption(f"URL: {r.url}")
+
+        # ── Contexto completo (para debug/LLM) ─────────────
+        st.markdown("<hr class='custom'>", unsafe_allow_html=True)
+        with st.expander("📋 Contexto completo para o LLM (debug)"):
+            ctx = resultado_web.get('contexto_completo', '')
+            st.caption(f"{len(ctx):,} caracteres extraídos")
+            st.text_area("", ctx[:5000], height=300, key="ctx_llm")
 
 # ══════════════════════════════════════════════════════════════
 # ABA TIME OTIMIZADO
 # ══════════════════════════════════════════════════════════════
 with tab_time:
     if not st.session_state.get('executado'):
-        st.markdown('<div class="alert-info">ℹ️ Execute a análise na aba <b>Análise da Rodada</b> para ver o time otimizado.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="alert-info">ℹ️ Execute a análise na barra lateral para ver o time otimizado.</div>', unsafe_allow_html=True)
     else:
         team_df   = st.session_state['team_df']
         best_team = st.session_state['best_team']
         stats     = st.session_state['stats']
         rodada    = st.session_state['rodada']
 
-        # ── KPIs ───────────────────────────────────────────
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("⚽ Pts Preditos", f"{stats['total_pontos_preditos']:.1f}")
         c2.metric("💰 Custo Total", fmt_preco(stats['total_preco']))
         c3.metric("📊 Patrimônio Usado", f"{stats['patrimonio_usado']:.1f}%")
         c4.metric("📅 Rodada", f"#{rodada}")
 
-        # Barra de uso do patrimônio
         st.markdown(progress_html(stats['patrimonio_usado']), unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # ── Time por posição ───────────────────────────────
+        # Alertas de desfalque do time selecionado
+        resultado_web = st.session_state.get('resultado_web', {})
+        desfalques_time = resultado_web.get('noticias_desfalques', [])
+        if desfalques_time:
+            nomes_time = [a.get('apelido', a.get('nome', '')) for a in best_team]
+            for alerta in desfalques_time:
+                for nome in nomes_time:
+                    if nome and nome.lower() in alerta.lower():
+                        st.markdown(f'<div class="alert-warning">⚠️ {alerta}</div>', unsafe_allow_html=True)
+
         st.markdown(f"### 🏆 Escalação Sugerida — {formacao}")
 
-        # Recuperar mapas de clube e partida
         _abrev_map    = st.session_state.get('abrev_map', {})
         _clubes_full  = st.session_state.get('clubes_map', {})
         _partidas_map = st.session_state.get('partidas_map', {})
 
-        POS_ORDER = {1:1, 2:3, 3:2, 4:4, 5:5, 6:6}  # GOL, ZAG, LAT, MEI, ATA, TEC
+        POS_ORDER = {1:1, 2:3, 3:2, 4:4, 5:5, 6:6}
         pos_order_rev = {1:'⛔ Goleiro', 2:'🛡️ Laterais', 3:'🛡️ Zagueiros',
                          4:'⚙️ Meias', 5:'🔥 Atacantes', 6:'📋 Técnico'}
 
         atletas_sorted = sorted(best_team, key=lambda a: POS_ORDER.get(a.get('posicao_id', 9), 9))
 
-        # Cabeçalho da tabela
         hdr = st.columns([2.8, 1.4, 1.2, 2.2, 2.2, 1.8])
         for _col, _lbl in zip(hdr, ['JOGADOR', 'CLUBE', 'PREÇO', 'PARTIDA', 'PREDIÇÃO', 'TAGS']):
             _col.markdown(f"<span style='color:#8b949e; font-size:0.75rem; font-weight:600; letter-spacing:.05em'>{_lbl}</span>",
@@ -854,17 +1018,21 @@ with tab_time:
             em_casa = atleta.get('mando_casa', 0)
             val     = atleta.get('esperanca_valorizacao', 0)
 
-            # Clube
             clube_abrev = _abrev_map.get(clube_id, str(clube_id))
             clube_full  = _clubes_full.get(clube_id, clube_abrev)
+            jogo_str    = _partidas_map.get(clube_id, '—')
 
-            # Partida
-            jogo_str = _partidas_map.get(clube_id, '—')
+            # Tags web research
+            tem_alerta_web = any(
+                nome.lower() in al.lower()
+                for al in resultado_web.get('noticias_desfalques', [])
+            ) if nome else False
 
-            # Tags
             boost_tags = ""
             if is_capitao:
                 boost_tags += '<span class="boost-tag" style="color:#ffd700; border-color:#ffd700">👑Capitão</span> '
+            if tem_alerta_web:
+                boost_tags += '<span class="boost-tag" style="color:#ff7b72; border-color:#ff7b72">⚠️Web</span> '
             if val > 0.5:
                 boost_tags += f'<span class="boost-tag" style="color:#39d353; border-color:#39d353">🤑+C${val:.1f}</span> '
             elif val < -0.5:
@@ -893,15 +1061,9 @@ with tab_time:
                     unsafe_allow_html=True
                 )
             with col_preco:
-                st.markdown(
-                    f"<span style='color:#ffa657; font-weight:700;'>C$ {preco:.1f}</span>",
-                    unsafe_allow_html=True
-                )
+                st.markdown(f"<span style='color:#ffa657; font-weight:700;'>C$ {preco:.1f}</span>", unsafe_allow_html=True)
             with col_jogo:
-                st.markdown(
-                    f"<span style='color:#8b949e; font-size:0.8rem;'>{jogo_str}</span>",
-                    unsafe_allow_html=True
-                )
+                st.markdown(f"<span style='color:#8b949e; font-size:0.8rem;'>{jogo_str}</span>", unsafe_allow_html=True)
             with col_pred:
                 st.markdown(f"""
                 <div style="display:flex; align-items:center; gap:8px;">
@@ -913,11 +1075,10 @@ with tab_time:
             with col_extra:
                 st.markdown(boost_tags or "<span style='color:#444'>—</span>", unsafe_allow_html=True)
 
-        # ── Comparativo com médias ─────────────────────────
         st.markdown("<hr class='custom'>", unsafe_allow_html=True)
         st.markdown("#### 📊 Distribuição por Posição")
 
-        _abrev_map2   = st.session_state.get('abrev_map', {})
+        _abrev_map2    = st.session_state.get('abrev_map', {})
         _partidas_map2 = st.session_state.get('partidas_map', {})
         rows_pos = []
         pos_groups = {}
@@ -933,16 +1094,12 @@ with tab_time:
             custo  = sum(a.get('preco', 0) for a in atletas)
             rows_pos.append({
                 'Posição': POSICAO_NOME.get(pid, '?'),
-                'Atletas': nomes,
-                'Clube(s)': clubes,
-                'Partida(s)': jogos,
-                'Pts Preditos': f"{total:.1f}",
-                'Custo C$': f"{custo:.1f}",
+                'Atletas': nomes, 'Clube(s)': clubes, 'Partida(s)': jogos,
+                'Pts Preditos': f"{total:.1f}", 'Custo C$': f"{custo:.1f}",
             })
 
         st.dataframe(pd.DataFrame(rows_pos), use_container_width=True, hide_index=True)
 
-        # ── Download ───────────────────────────────────────
         st.markdown("<hr class='custom'>", unsafe_allow_html=True)
         csv_time = team_df.to_csv(index=False).encode('utf-8')
         st.download_button(
@@ -1007,7 +1164,6 @@ with tab_historico:
 
         conn.close()
 
-        # ── Performance das escalações otimizadas ───────────
         st.markdown("<hr class='custom'>", unsafe_allow_html=True)
         st.markdown("#### 🧮 Performance das Escalações Otimizadas")
 
@@ -1027,11 +1183,10 @@ with tab_historico:
                     "pontos_totais", "pontos_capitao_totais", "media_por_rodada",
                 ]
                 show_df = perf_df[display_cols].copy()
-                show_df["media_por_rodada"] = show_df["media_por_rodada"].round(2)
-                show_df["pontos_totais"] = show_df["pontos_totais"].round(1)
-                show_df["pontos_capitao_totais"] = show_df["pontos_capitao_totais"].round(1)
-
+                show_df["media_por_rodada"]        = show_df["media_por_rodada"].round(2)
+                show_df["pontos_totais"]           = show_df["pontos_totais"].round(1)
+                show_df["pontos_capitao_totais"]   = show_df["pontos_capitao_totais"].round(1)
                 st.dataframe(show_df, use_container_width=True, hide_index=True)
 
         except Exception as ex:
-            st.warning(f"Não foi possível calcular a performance das escalações: {ex}")
+            st.warning(f"Não foi possível calcular performance das escalações: {ex}")
