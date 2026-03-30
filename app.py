@@ -279,6 +279,15 @@ def info_banco():
         conn.close()
         return {}
 
+
+def get_season_year() -> int:
+    """Retorna o ano da temporada a partir da config.
+
+    Mantém compatibilidade com bancos antigos onde o ano default é 2024.
+    """
+    cfg = carregar_config()
+    return int(cfg.get("season", {}).get("year", 2024))
+
 # ─────────────────────────────────────────────────────────────
 # SIDEBAR — CONFIGURAÇÕES
 # ─────────────────────────────────────────────────────────────
@@ -322,7 +331,7 @@ with st.sidebar:
         population_size = st.slider("Tamanho da População",  100, 500, opt_cfg.get('population_size', 250), 50, help="Quantos times avaliar por geração. Valores altos encontram times melhores mas são mais lentos.")
         generations     = st.slider("Gerações",    50, 300, opt_cfg.get('generations', 150), 25, help="Qtd de iterações do algoritmo. Mais gerações = melhor otimização.")
         mutation_rate   = st.slider("Taxa de Mutação", 0.05, 0.40, opt_cfg.get('mutation_rate', 0.20), 0.05, help="Probabilidade de um jogador do time ser trocado por outro aleatório.")
-        max_mesmo_clube = st.slider("Máx. Jogadores do mesmo Clube", 1, 5, opt_cfg.get('max_mesmo_clube', 2), 1, help="Evita times inteiros de uma só equipe, mitigando risco de revés.")
+        max_mesmo_clube = st.slider("Máx. Jogadores do mesmo Clube", 1, 5, opt_cfg.get('max_mesmo_clube', 3), 1, help="Evita times inteiros de uma só equipe, mitigando risco de revés.")
 
     with st.expander("Status da API / Banco", expanded=False):
         info = info_banco()
@@ -374,7 +383,8 @@ with tab_home:
     with col3:
         st.metric("Máx. Jogadores/Clube", max_mesmo_clube, delta="-Risco" if max_mesmo_clube <= 3 else "+Risco", delta_color="inverse")
     with col4:
-        val = info.get('ultima_rodada', '—')
+        info = info_banco()
+        val = info.get('ultima_rodada', '—') if info else '—'
         st.metric("Última Rodada no BD", f"#{val}" if val != '—' else '—', delta="Atualizado")
 
     st.markdown("<hr class='custom'>", unsafe_allow_html=True)
@@ -495,6 +505,7 @@ with tab_analise:
                 PASSWORD  = os.getenv('CARTOLA_PASSWORD')
                 PATRIMONIO = patrimonio
                 FORMACAO   = formacao
+                ANO_TEMPORADA = get_season_year()
 
                 # ── 1. API Client ──────────────────────────────
                 log("Inicializando cliente API...")
@@ -542,18 +553,17 @@ with tab_analise:
 
                 # ── 3. Histórico ───────────────────────────────
                 conn = sqlite3.connect(str(collector.db_path))
-                ano_atual = mercado.get('temporada', 2026)
                 
                 historico_df = pd.read_sql_query("""
                     SELECT p.*, a.clube_id FROM pontuacoes p
                     JOIN atletas a ON p.atleta_id = a.atleta_id
                     WHERE p.ano = ? AND p.rodada >= ? AND p.rodada <= ?
                     ORDER BY p.atleta_id, p.rodada
-                """, conn, params=(ano_atual, max(1, rodada_atual - 15), rodada_atual))
+                """, conn, params=(ANO_TEMPORADA, max(1, rodada_atual - 15), rodada_atual))
 
                 partidas_df = pd.read_sql_query("""
                     SELECT * FROM partidas WHERE ano = ? AND rodada >= ? AND rodada <= ?
-                """, conn, params=(ano_atual, max(1, rodada_atual - 15), rodada_atual))
+                """, conn, params=(ANO_TEMPORADA, max(1, rodada_atual - 15), rodada_atual))
                 conn.close()
 
                 # Mapa clube_id → partida da rodada (mandante vs visitante)
@@ -718,8 +728,6 @@ with tab_analise:
                 # Persistir a escalação no SQLite para avaliação posterior (sem IA)
                 try:
                     from src.data.collector import CartolaDataCollector
-                    # Ano fixo 2024 por enquanto, seguindo default das tabelas
-                    ANO_TEMPORADA = 2024
                     collector.salvar_escalacao(
                         ano=ANO_TEMPORADA,
                         rodada=rodada_atual,
@@ -998,3 +1006,32 @@ with tab_historico:
                 st.warning("Nenhum atleta encontrado com esse nome.")
 
         conn.close()
+
+        # ── Performance das escalações otimizadas ───────────
+        st.markdown("<hr class='custom'>", unsafe_allow_html=True)
+        st.markdown("#### 🧮 Performance das Escalações Otimizadas")
+
+        from src.analysis.performance import historico_performance
+
+        ano_temp = get_season_year()
+        try:
+            ultimas_n = st.slider("Últimas rodadas para avaliar", 3, 30, 10)
+            perf_df = historico_performance(db, ano=ano_temp, ultimas_n_rodadas=ultimas_n)
+
+            if perf_df.empty:
+                st.info("Nenhuma escalação otimizada encontrada na tabela 'escalacoes' para esse ano.")
+            else:
+                st.markdown("Performance média por estratégia / formação (pontos reais por rodada):")
+                display_cols = [
+                    "estrategia", "formacao", "patrimonio", "rodadas",
+                    "pontos_totais", "pontos_capitao_totais", "media_por_rodada",
+                ]
+                show_df = perf_df[display_cols].copy()
+                show_df["media_por_rodada"] = show_df["media_por_rodada"].round(2)
+                show_df["pontos_totais"] = show_df["pontos_totais"].round(1)
+                show_df["pontos_capitao_totais"] = show_df["pontos_capitao_totais"].round(1)
+
+                st.dataframe(show_df, use_container_width=True, hide_index=True)
+
+        except Exception as ex:
+            st.warning(f"Não foi possível calcular a performance das escalações: {ex}")

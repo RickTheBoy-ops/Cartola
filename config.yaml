@@ -10,6 +10,9 @@ database:
   path: "data/cartola.db"
   backup_enabled: true
 
+season:
+  year: 2026
+
 cache:
   clubes_ttl: 86400 # 24h
   mercado_status_ttl: 120 # 2min
