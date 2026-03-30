@@ -11,8 +11,8 @@ Uso típico:
         historico_performance,
     )
 
-    df_rodada = calcular_performance_rodada(db_path, ano=2024, rodada=7)
-    df_hist = historico_performance(db_path, ano=2024, ultimas_n_rodadas=10)
+    df_rodada = calcular_performance_rodada(db_path, ano, rodada=7)
+    df_hist = historico_performance(db_path, ano, ultimas_n_rodadas=10)
 """
 
 from __future__ import annotations
