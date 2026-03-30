@@ -140,4 +140,13 @@ def historico_performance(
         agg = (
             df.groupby(["ano", "estrategia", "formacao", "patrimonio"], as_index=False)
               .agg(
-                  rodadas=(
+                  rodadas=("rodada", "nunique"),
+                  pontos_totais=("pontos_time", "sum"),
+                  pontos_capitao_totais=("pontos_capitao", "sum"),
+              )
+        )
+        agg["media_por_rodada"] = agg["pontos_totais"] / agg["rodadas"]
+
+        return agg.sort_values(["media_por_rodada"], ascending=False)
+    finally:
+        conn.close()
