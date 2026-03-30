@@ -715,6 +715,24 @@ with tab_analise:
                 team_df.to_csv(out / "time_sugerido.csv", index=False)
                 predicoes_df.to_csv(out / "predicoes_rodada.csv", index=False)
 
+                # Persistir a escalação no SQLite para avaliação posterior (sem IA)
+                try:
+                    from src.data.collector import CartolaDataCollector
+                    # Ano fixo 2024 por enquanto, seguindo default das tabelas
+                    ANO_TEMPORADA = 2024
+                    collector.salvar_escalacao(
+                        ano=ANO_TEMPORADA,
+                        rodada=rodada_atual,
+                        estrategia=selected_strategy,
+                        formacao=FORMACAO,
+                        patrimonio=PATRIMONIO,
+                        lineup_df=lineup,
+                        capitao_id=None,  # capitão ainda não é destacado no pipeline
+                    )
+                    log("Escalação salva em 'escalacoes' para avaliação futura", "ok")
+                except Exception as ex:
+                    log(f"Não foi possível salvar a escalação em 'escalacoes': {ex}", "warn")
+
                 progress.progress(100, "✅ Concluído!")
 
                 # ── Persistir no session_state ─────────────────
