@@ -48,7 +48,7 @@ class CartolaPredictor:
         """Prepara features para treinamento/predição"""
         feature_cols = [
             # Médias móveis simples
-            'pontos_media_3', 'pontos_media_5', 'pontos_media_8',
+            'pontos_media_3', 'pontos_media_5', 'pontos_media_9',
             'pontos_std_3', 'pontos_std_5',
             'pontos_max_5', 'pontos_min_5',
 
@@ -450,3 +450,152 @@ class CartolaPredictor:
         result = result.sort_values(sort_col, ascending=False).reset_index(drop=True)
 
         return result
+
+class ValorizacaoPredictor:
+    """
+    Modelo de predição de Variação de Preço (Cartoletas) usando ensemble.
+    Baseado na metodologia ensinada no R² boost com Árvores de Decisão.
+    """
+
+    HISTORICO_MINIMO = 30  # Mínimo de amostras para treinar
+
+    def __init__(self, model_type: str = 'rf'):
+        self.model_type = model_type
+        self.model = None
+        self.feature_columns = None
+        self.is_trained = False
+
+        if model_type == 'rf':
+            self.model = RandomForestRegressor(
+                n_estimators=100,
+                max_depth=10,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                random_state=42,
+                n_jobs=-1
+            )
+        elif model_type == 'gb':
+            self.model = GradientBoostingRegressor(
+                n_estimators=100,
+                learning_rate=0.05,
+                max_depth=5,
+                random_state=42
+            )
+
+    def prepare_features(self, df: pd.DataFrame, is_training: bool = False) -> Tuple[pd.DataFrame, pd.Series]:
+        """Prepara features para predição de variação de preço"""
+        # Features baseadas no tutorial Parte 2 e no Cartola Predictor
+        feature_cols = [
+            'pontos', 'preco', 'media', 'variacao', # status atual do jogador
+            
+            # Derivadas de variação
+            'variacao_acumulada_5',
+            'distancia_mpv', 'custo_beneficio',
+            
+            # Médias móveis
+            'pontos_media_3', 'pontos_media_5',
+            
+            # Características táticas/posicionais
+            'posicao_id', 'mando_casa', 'forca_adversario',
+        ]
+
+        # Filtrar colunas que existem
+        available_cols = [col for col in feature_cols if col in df.columns]
+
+        X = df[available_cols].copy()
+        y = df['variacao_preco_prox'].copy() if 'variacao_preco_prox' in df.columns else None
+
+        if is_training:
+            self.feature_columns = available_cols
+
+        return X, y
+
+    def train(self, df: pd.DataFrame, validate: bool = True) -> Dict:
+        """Treina modelo para prever variacao_preco_prox"""
+        if len(df) < self.HISTORICO_MINIMO:
+            logger.warning(
+                f"⚠️ Histórico insuficiente para ValorizacaoPredictor ({len(df)} < {self.HISTORICO_MINIMO})."
+            )
+            return {'mae': 0, 'rmse': 0, 'r2': 0, 'fallback': True}
+
+        X, y = self.prepare_features(df, is_training=True)
+
+        if y is None:
+            raise ValueError("Target 'variacao_preco_prox' not found in dataframe!")
+
+        logger.info(f"💰 Treinando ValorizacaoPredictor com {len(X)} amostras")
+
+        if validate and len(X) > 10:
+            tscv = TimeSeriesSplit(n_splits=min(5, len(X) // 2))
+            try:
+                cv_scores = cross_val_score(
+                    self.model, X, y,
+                    cv=tscv,
+                    scoring='r2',
+                    n_jobs=-1
+                )
+                logger.info(f"📊 R2 Cross-Validation (Valorização): {cv_scores.mean():.2f} (+/- {cv_scores.std():.2f})")
+            except Exception as e:
+                logger.warning(f"⚠️ Erro no Cross-Validation Valorização: {e}")
+
+        # Treinar no dataset completo
+        self.model.fit(X, y)
+        self.is_trained = True
+
+        y_pred = self.model.predict(X)
+        metrics = {
+            'mae': mean_absolute_error(y, y_pred),
+            'rmse': np.sqrt(mean_squared_error(y, y_pred)),
+            'r2': r2_score(y, y_pred),
+            'fallback': False,
+            'source': 'train_set'
+        }
+
+        logger.info(
+            f"📈 Métricas Valorização (Treino) — "
+            f"R2: {metrics['r2']:.2f}, "
+            f"MAE: {metrics['mae']:.2f}"
+        )
+
+        return metrics
+
+    def predict(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Prediz variação de preço (cartoletas) na rodada seguinte"""
+        if not self.is_trained:
+            logger.warning("⚠️ ValorizacaoPredictor não treinado, retornando variação 0")
+            result_df = df.copy()
+            result_df['esperanca_valorizacao'] = 0.0
+            return result_df
+
+        X, _ = self.prepare_features(df)
+
+        # Garantir mesmas features do treino
+        missing = [c for c in self.feature_columns if c not in X.columns]
+        for col in missing:
+            X[col] = 0
+        X = X[self.feature_columns]
+
+        predictions = self.model.predict(X)
+
+        result_df = df.copy()
+        result_df['esperanca_valorizacao'] = predictions
+
+        return result_df
+
+    def save_model(self, filepath: str):
+        joblib.dump({
+            'model': self.model,
+            'feature_columns': self.feature_columns,
+            'model_type': self.model_type,
+            'is_trained': self.is_trained
+        }, filepath)
+        logger.info(f"💾 ValorizacaoPredictor salvo em: {filepath}")
+
+    def load_model(self, filepath: str):
+        data = joblib.load(filepath)
+        self.model = data['model']
+        self.feature_columns = data['feature_columns']
+        self.model_type = data['model_type']
+        self.is_trained = data.get('is_trained', True)
+        logger.info(f"📂 ValorizacaoPredictor carregado de: {filepath}")
+

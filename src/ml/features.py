@@ -1,5 +1,5 @@
-import pandas as pd
-import numpy as np
+import pandas as pd  # type: ignore
+import numpy as np  # type: ignore
 from typing import List, Dict
 import logging
 
@@ -32,10 +32,10 @@ class FeatureEngineer:
     }
 
     @staticmethod
-    def create_rolling_features(df: pd.DataFrame, windows: List[int] = [3, 5, 8]) -> pd.DataFrame:
+    def create_rolling_features(df: pd.DataFrame, windows: List[int] = [3, 5, 9]) -> pd.DataFrame:
         """
         Cria médias móveis simples e ponderadas (peso exponencial).
-        Janela [3, 5, 8] para capturar forma recente, média e tendência longa.
+        Janela [3, 5, 9] para capturar forma recente, média e tendência longa.
         """
         df = df.sort_values(['atleta_id', 'rodada'])
 
@@ -81,12 +81,12 @@ class FeatureEngineer:
         """
         df = df.sort_values(['atleta_id', 'rodada'])
 
-        # Tendência (últimas 3 rodadas vs últimas 8 rodadas)
+        # Tendência (últimas 3 rodadas vs últimas 9 rodadas)
         media_curta = df.groupby('atleta_id')['pontos'].transform(
             lambda x: x.rolling(3, min_periods=1).mean()
         )
         media_longa = df.groupby('atleta_id')['pontos'].transform(
-            lambda x: x.rolling(8, min_periods=1).mean()
+            lambda x: x.rolling(9, min_periods=1).mean()
         )
         df['tendencia'] = media_curta - media_longa
 
@@ -179,7 +179,7 @@ class FeatureEngineer:
         )
 
         # Mando de campo
-        df_merged['mando_casa'] = eh_casa.astype(int)
+        df_merged['mando_casa'] = eh_casa.astype(int)  # type: ignore
 
         # Remover colunas temporárias de merge
         cols_remover = ['clube_casa_id', 'clube_visitante_id', 'aproveitamento_mandante', 'aproveitamento_visitante']
@@ -265,15 +265,15 @@ class FeatureEngineer:
 
         for pos_id, weights in cls.SCOUT_WEIGHTS_POR_POSICAO.items():
             mask = df['posicao_id'] == pos_id
-            if not mask.any() or not weights:
+            if not mask.any() or not weights:  # type: ignore
                 continue
 
             score = pd.Series(0.0, index=df.index)
             for scout, weight in weights.items():
                 if scout in df.columns:
-                    score += df[scout].fillna(0) * weight
+                    score += df[scout].fillna(0) * weight  # type: ignore
 
-            df.loc[mask, 'position_score'] = score[mask]
+            df.loc[mask, 'position_score'] = score[mask]  # type: ignore
 
         return df
 
@@ -670,6 +670,34 @@ class FeatureEngineer:
             df['pontos_cedidos_posicao'] = 0.5
 
         return df
+
+    @staticmethod
+    def create_valorizacao_samples(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Gera amostras para treinamento do modelo preditivo de variação de preço.
+        Pareia os status do atleta na rodada atual (t) com a variação de preço de (t+1).
+        
+        Equivalente ao passo '2. Criação das Amostras' do tutorial do Cartola.
+        """
+        if 'variacao' not in df.columns or 'atleta_id' not in df.columns or 'rodada' not in df.columns:
+            logger.warning("⚠️ Colunas 'variacao', 'atleta_id' ou 'rodada' ausentes para gerar amostras de valorização.")
+            return pd.DataFrame()
+
+        df_sorted = df.sort_values(by=['atleta_id', 'rodada']).copy()
+        
+        # Deslocar a coluna 'variacao' em 1 para cima, para prever a do próximo jogo
+        df_sorted['variacao_preco_prox'] = df_sorted.groupby('atleta_id')['variacao'].shift(-1)
+        
+        # Manter apenas as amostras onde sabemos o target
+        df_samples = df_sorted.dropna(subset=['variacao_preco_prox']).copy()
+        
+        # Filtrar atletas que não jogaram (quando tanto atual quanto prox variacao são 0)
+        df_samples = df_samples[(df_samples['variacao'] != 0) | (df_samples['variacao_preco_prox'] != 0)]
+        
+        # Log de quantas amostras conseguimos
+        logger.info(f"📈 Amostras de variação de preço geradas: {len(df_samples)} registros.")
+        
+        return df_samples
 
     @classmethod
     def engineer_all_features_v3(

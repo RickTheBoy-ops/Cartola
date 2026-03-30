@@ -46,6 +46,7 @@ class GeneticStrategy(OptimizerStrategy):
                  df: pd.DataFrame, 
                  budget: float, 
                  formation: Optional[str] = None,
+                 partidas_df=None,
                  **kwargs) -> Optional[pd.DataFrame]:
         """
         Otimização principal usando Algoritmo Genético.
@@ -83,35 +84,33 @@ class GeneticStrategy(OptimizerStrategy):
         print(f"🧬 Iniciando otimização genética (pode demorar alguns segundos)...")
         
         for form in formations_to_test:
-            try:
-                optimizer = GeneticTeamOptimizer(
-                    atletas_df=df,
-                    predicoes=pred_df,
-                    patrimonio=budget,
-                    formacao=form,
-                    population_size=self.config['population_size'],
-                    generations=self.config['generations'],
-                    mutation_rate=self.config['mutation_rate'],
-                    elite_size=self.config['elite_size'],
-                    max_mesmo_clube=self.config['max_mesmo_clube'],
-                    penalidade_variancia=self.config['penalidade_variancia']
-                )
+            optimizer = GeneticTeamOptimizer(
+                atletas_df=df,
+                predicoes=pred_df,
+                patrimonio=budget,
+                formacao=form,
+                population_size=self.config['population_size'],
+                generations=self.config['generations'],
+                mutation_rate=self.config['mutation_rate'],
+                elite_size=self.config['elite_size'],
+                max_mesmo_clube=self.config['max_mesmo_clube'],
+                penalidade_variancia=self.config['penalidade_variancia'],
+                partidas_df=partidas_df,
+            )
+            
+            team, stats = optimizer.optimize()
+            
+            if team and len(team) == 12:
+                team_formatted = optimizer.format_team_output(team)
                 
-                team, stats = optimizer.optimize()
+                # Restaurar os IDs para o formato do dataframe original
+                team_df = pd.DataFrame(team)
+                score = stats['total_pontos_preditos']
                 
-                if team and len(team) == 12:
-                    team_formatted = optimizer.format_team_output(team)
-                    
-                    # Restaurar os IDs para o formato do dataframe original
-                    team_df = pd.DataFrame(team)
-                    score = stats['total_pontos_preditos']
-                    
-                    if score > best_score:
-                        best_score = score
-                        best_lineup = team_df
-                        best_formation = form
-            except Exception as e:
-                logger.error(f"Erro ao otimizar formação {form} com genético: {e}")
+                if score > best_score:
+                    best_score = score
+                    best_lineup = team_df
+                    best_formation = form
                 
         if best_lineup is not None:
              print(f"\n   🏆 MELHOR FORMAÇÃO GENÉTICA: {best_formation} (Score: {best_score:.1f})")

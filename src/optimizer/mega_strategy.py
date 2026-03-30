@@ -63,6 +63,7 @@ class MegaStrategy(OptimizerStrategy):
                  df: pd.DataFrame, 
                  budget: float, 
                  formation: Optional[str] = None,
+                 partidas_df=None,
                  **kwargs) -> Optional[pd.DataFrame]:
         """
         Otimização principal usando PuLP.
@@ -79,6 +80,15 @@ class MegaStrategy(OptimizerStrategy):
         if len(df) < 12:
             print(f"❌ Poucos jogadores disponíveis: {len(df)}")
             return None
+            
+        # ── Regra Anti-Confronto ──────────
+        self.confrontos_set: set = set()
+        if partidas_df is not None and len(partidas_df) > 0:
+            for _, row in partidas_df.iterrows():
+                c_a = row.get('clube_casa_id') or row.get('clube_id_a')
+                c_b = row.get('clube_visitante_id') or row.get('clube_id_b')
+                if c_a and c_b and c_a != c_b:
+                    self.confrontos_set.add(frozenset({int(c_a), int(c_b)}))
         
         # Se formação específica, otimizar apenas ela
         if formation:
@@ -220,11 +230,13 @@ class MegaStrategy(OptimizerStrategy):
             for idx_j in indices[i+1:]:
                 pj = df.loc[idx_j]
                 
-                # Verificar se são adversários diretos
-                is_opponents = (
-                    (pi['clube_id'] == pj.get('opponent_id')) or
-                    (pi.get('opponent_id') == pj['clube_id'])
-                )
+                # Verificar se são adversários diretos usando o confrontos_set
+                c_i = pi.get('clube_id', 0)
+                c_j = pj.get('clube_id', 0)
+                is_opponents = False
+                if c_i and c_j and c_i != c_j:
+                    if hasattr(self, 'confrontos_set') and frozenset({int(c_i), int(c_j)}) in self.confrontos_set:
+                        is_opponents = True
                 
                 if not is_opponents:
                     continue

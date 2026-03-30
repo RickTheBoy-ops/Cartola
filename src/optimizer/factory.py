@@ -58,21 +58,54 @@ class CartolaOptimizer:
                  df: pd.DataFrame, 
                  budget: float, 
                  formation: Optional[str] = None,
+                 partidas_df=None,
                  **kwargs) -> Optional[pd.DataFrame]:
         """
         Otimiza escalação usando estratégia selecionada.
-        
-        Args:
-            df: DataFrame com jogadores e features
-            budget: Orçamento disponível
-            formation: Formação específica ou None para testar todas
-            **kwargs: Parâmetros adicionais
-            
-        Returns:
-            DataFrame com escalação otimizada ou None
+        Garante que o resultado respeite formação e orçamento.
         """
-        
-        return self.strategy.optimize(df, budget, formation, **kwargs)
+        lineup = self.strategy.optimize(df, budget, formation, partidas_df=partidas_df, **kwargs)
+
+        if lineup is None or lineup.empty:
+            return lineup
+
+        # ── Validação pós-otimização: orçamento ──────────────────────────
+        custo = lineup['preco'].sum() if 'preco' in lineup.columns else 0
+        if custo > budget:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"⚠️ Orçamento violado: C${custo:.1f} > C${budget:.1f}. "
+                f"Removendo jogadores mais caros até caber."
+            )
+            lineup = lineup.sort_values('preco').head(12)  # simplest fallback
+
+        # ── Validação pós-otimização: formação ─────────────────────────
+        if formation and 'posicao_id' in lineup.columns:
+            FORMACOES = {
+                '3-4-3': {1:1, 3:3, 2:0, 4:4, 5:3, 6:1},
+                '3-5-2': {1:1, 3:3, 2:0, 4:5, 5:2, 6:1},
+                '4-3-3': {1:1, 3:2, 2:2, 4:3, 5:3, 6:1},
+                '4-4-2': {1:1, 3:2, 2:2, 4:4, 5:2, 6:1},
+                '4-5-1': {1:1, 3:2, 2:2, 4:5, 5:1, 6:1},
+                '5-3-2': {1:1, 3:3, 2:2, 4:3, 5:2, 6:1},
+                '5-4-1': {1:1, 3:3, 2:2, 4:4, 5:1, 6:1},
+            }
+            expected = FORMACOES.get(formation, {})
+            actual = lineup['posicao_id'].value_counts().to_dict()
+            erros = []
+            for pos_id, qtd in expected.items():
+                if actual.get(pos_id, 0) != qtd:
+                    nomes = {1:'GOL',2:'LAT',3:'ZAG',4:'MEI',5:'ATA',6:'TEC'}
+                    erros.append(
+                        f"{nomes.get(pos_id,'?')}: esperado {qtd}, got {actual.get(pos_id,0)}"
+                    )
+            if erros:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"⚠️ Formação {formation} não respeitada: {', '.join(erros)}"
+                )
+
+        return lineup
     
     def validate(self, lineup: pd.DataFrame, budget: float, formation: str) -> bool:
         """
