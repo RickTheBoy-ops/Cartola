@@ -1,49 +1,36 @@
-import sqlite3
-import os
-
+import numpy as np
 import pandas as pd
-import pytest
 
 from src.optimizer.genetic_strategy import GeneticStrategy
 
-# Caminho esperado do banco local usado apenas para este teste manual
-DB_PATH = "data/cartola.db"
 
-
-@pytest.mark.skipif(
-    not os.path.exists(DB_PATH),
-    reason="Requer banco local data/cartola.db com tabela 'atletas' (teste manual, não roda em CI)",
-)
 def test_genetic():
-    """Teste manual/integrado do GeneticStrategy com banco SQLite real.
+    """Teste do GeneticStrategy usando dados mockados em memória.
 
-    Em ambientes onde o arquivo data/cartola.db não estiver presente (como no CI),
-    o teste é automaticamente marcado como skipped para não quebrar o pipeline.
+    Este teste não depende de nenhum banco SQLite local e pode rodar
+    normalmente no GitHub Actions.
     """
-    conn = sqlite3.connect(DB_PATH)
-    atletas = pd.read_sql_query(
-        "SELECT atleta_id, apelido, posicao_id, clube_id FROM atletas",
-        conn,
-    )
+    np.random.seed(42)
+    n_atletas = 30
 
-    import numpy as np
+    # 1: GOL, 2: LAT, 3: ZAG, 4: MEI, 5: ATA, 6: TEC
+    posicoes = [1] * 3 + [2] * 6 + [3] * 6 + [4] * 8 + [5] * 5 + [6] * 2
 
-    atletas['preco'] = np.random.uniform(5, 15, len(atletas))
-    atletas['predicao'] = np.random.uniform(2, 12, len(atletas))
-    atletas['predicao_std'] = 1.0
-    atletas['status_id'] = 7
+    atletas = pd.DataFrame({
+        'atleta_id': range(1, n_atletas + 1),
+        'apelido': [f"Jogador_{i}" for i in range(1, n_atletas + 1)],
+        'posicao_id': posicoes,
+        'clube_id': np.random.randint(1, 10, n_atletas),
+        'preco': np.random.uniform(5, 15, n_atletas),
+        'predicao': np.random.uniform(2, 12, n_atletas),
+        'predicao_std': [1.0] * n_atletas,
+        'status_id': [7] * n_atletas,
+    })
 
     strat = GeneticStrategy()
-    print("Iniciando strat.optimize...")
-    try:
-        res = strat.optimize(atletas, budget=120, formation='4-4-2')
-        if res is None:
-            print("GENETIC RETURNED NONE. WHY?")
-        else:
-            print("GENETIC SUCCESS! len:", len(res))
-    except Exception:
-        # Em testes manuais, salvar o traceback para inspeção local
-        import traceback
 
-        with open('error.log', 'w') as f:
-            f.write(traceback.format_exc())
+    lineup = strat.optimize(atletas, budget=120.0, formation='4-4-2')
+
+    assert lineup is not None
+    assert len(lineup) == 12
+    assert lineup['preco'].sum() <= 120.0
