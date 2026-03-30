@@ -46,6 +46,7 @@ class GeneticStrategy(OptimizerStrategy):
                  df: pd.DataFrame, 
                  budget: float, 
                  formation: Optional[str] = None,
+                 partidas_df=None,
                  **kwargs) -> Optional[pd.DataFrame]:
         """
         Otimização principal usando Algoritmo Genético.
@@ -93,7 +94,8 @@ class GeneticStrategy(OptimizerStrategy):
                 mutation_rate=self.config['mutation_rate'],
                 elite_size=self.config['elite_size'],
                 max_mesmo_clube=self.config['max_mesmo_clube'],
-                penalidade_variancia=self.config['penalidade_variancia']
+                penalidade_variancia=self.config['penalidade_variancia'],
+                partidas_df=partidas_df,
             )
             
             team, stats = optimizer.optimize()

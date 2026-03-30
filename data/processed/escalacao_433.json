@@ -1,0 +1,159 @@
+{
+  "rodada": 9,
+  "temporada": 2026,
+  "formacao": "4-3-3",
+  "orcamento": 112.0,
+  "custo_total": 110.4,
+  "saldo_restante": 1.6,
+  "media_total": 99.82,
+  "time": [
+    {
+      "posicao": "ZAG",
+      "apelido": "Rafael Tolói",
+      "clube": "SAO",
+      "preco": 8.5,
+      "media": 10.6,
+      "score": 10.1
+    },
+    {
+      "posicao": "MEI",
+      "apelido": "Marcelinho",
+      "clube": "RBB",
+      "preco": 3.03,
+      "media": 6.3,
+      "score": 10.02
+    },
+    {
+      "posicao": "ATA",
+      "apelido": "Gabriel Taliari",
+      "clube": "REM",
+      "preco": 10.91,
+      "media": 10.1,
+      "score": 8.84
+    },
+    {
+      "posicao": "ZAG",
+      "apelido": "João Paulo",
+      "clube": "CHA",
+      "preco": 4.91,
+      "media": 7.0,
+      "score": 8.48
+    },
+    {
+      "posicao": "LAT",
+      "apelido": "Lucas Ramon",
+      "clube": "SAO",
+      "preco": 13.72,
+      "media": 10.35,
+      "score": 8.47
+    },
+    {
+      "posicao": "LAT",
+      "apelido": "Nicolas",
+      "clube": "SAO",
+      "preco": 2.79,
+      "media": 5.0,
+      "score": 8.38
+    },
+    {
+      "posicao": "ATA",
+      "apelido": "Kaio César",
+      "clube": "COR",
+      "preco": 10.83,
+      "media": 9.3,
+      "score": 8.16
+    },
+    {
+      "posicao": "MEI",
+      "apelido": "Barros",
+      "clube": "VAS",
+      "preco": 11.94,
+      "media": 9.32,
+      "score": 7.93
+    },
+    {
+      "posicao": "MEI",
+      "apelido": "Danilo Santos",
+      "clube": "BOT",
+      "preco": 15.85,
+      "media": 10.02,
+      "score": 7.91
+    },
+    {
+      "posicao": "ATA",
+      "apelido": "Lucas Ronier",
+      "clube": "CFC",
+      "preco": 10.58,
+      "media": 8.38,
+      "score": 7.4
+    },
+    {
+      "posicao": "GOL",
+      "apelido": "Lucas Arcanjo",
+      "clube": "VIT",
+      "preco": 10.11,
+      "media": 7.87,
+      "score": 7.06
+    },
+    {
+      "posicao": "TEC",
+      "apelido": "Fernando Seabra",
+      "clube": "CFC",
+      "preco": 7.23,
+      "media": 5.58,
+      "score": 5.66
+    }
+  ],
+  "partidas": [
+    {
+      "mandante": "BOT",
+      "visitante": "MIR",
+      "data": "2026-04-01 19:30:00"
+    },
+    {
+      "mandante": "INT",
+      "visitante": "SAO",
+      "data": "2026-04-01 19:30:00"
+    },
+    {
+      "mandante": "CRU",
+      "visitante": "VIT",
+      "data": "2026-04-01 20:00:00"
+    },
+    {
+      "mandante": "BAH",
+      "visitante": "CAP",
+      "data": "2026-04-01 20:00:00"
+    },
+    {
+      "mandante": "CFC",
+      "visitante": "VAS",
+      "data": "2026-04-01 20:30:00"
+    },
+    {
+      "mandante": "FLU",
+      "visitante": "COR",
+      "data": "2026-04-01 21:30:00"
+    },
+    {
+      "mandante": "SAN",
+      "visitante": "REM",
+      "data": "2026-04-02 19:00:00"
+    },
+    {
+      "mandante": "CHA",
+      "visitante": "CAM",
+      "data": "2026-04-02 19:00:00"
+    },
+    {
+      "mandante": "PAL",
+      "visitante": "GRE",
+      "data": "2026-04-02 21:30:00"
+    },
+    {
+      "mandante": "RBB",
+      "visitante": "FLA",
+      "data": "2026-04-02 21:30:00"
+    }
+  ]
+}

@@ -1,5 +1,5 @@
-import pandas as pd
-import numpy as np
+import pandas as pd  # type: ignore
+import numpy as np  # type: ignore
 from typing import List, Dict
 import logging
 
@@ -32,10 +32,10 @@ class FeatureEngineer:
     }
 
     @staticmethod
-    def create_rolling_features(df: pd.DataFrame, windows: List[int] = [3, 5, 8]) -> pd.DataFrame:
+    def create_rolling_features(df: pd.DataFrame, windows: List[int] = [3, 5, 9]) -> pd.DataFrame:
         """
         Cria médias móveis simples e ponderadas (peso exponencial).
-        Janela [3, 5, 8] para capturar forma recente, média e tendência longa.
+        Janela [3, 5, 9] para capturar forma recente, média e tendência longa.
         """
         df = df.sort_values(['atleta_id', 'rodada'])
 
@@ -81,12 +81,12 @@ class FeatureEngineer:
         """
         df = df.sort_values(['atleta_id', 'rodada'])
 
-        # Tendência (últimas 3 rodadas vs últimas 8 rodadas)
+        # Tendência (últimas 3 rodadas vs últimas 9 rodadas)
         media_curta = df.groupby('atleta_id')['pontos'].transform(
             lambda x: x.rolling(3, min_periods=1).mean()
         )
         media_longa = df.groupby('atleta_id')['pontos'].transform(
-            lambda x: x.rolling(8, min_periods=1).mean()
+            lambda x: x.rolling(9, min_periods=1).mean()
         )
         df['tendencia'] = media_curta - media_longa
 
@@ -179,7 +179,7 @@ class FeatureEngineer:
         )
 
         # Mando de campo
-        df_merged['mando_casa'] = eh_casa.astype(int)
+        df_merged['mando_casa'] = eh_casa.astype(int)  # type: ignore
 
         # Remover colunas temporárias de merge
         cols_remover = ['clube_casa_id', 'clube_visitante_id', 'aproveitamento_mandante', 'aproveitamento_visitante']
@@ -265,15 +265,15 @@ class FeatureEngineer:
 
         for pos_id, weights in cls.SCOUT_WEIGHTS_POR_POSICAO.items():
             mask = df['posicao_id'] == pos_id
-            if not mask.any() or not weights:
+            if not mask.any() or not weights:  # type: ignore
                 continue
 
             score = pd.Series(0.0, index=df.index)
             for scout, weight in weights.items():
                 if scout in df.columns:
-                    score += df[scout].fillna(0) * weight
+                    score += df[scout].fillna(0) * weight  # type: ignore
 
-            df.loc[mask, 'position_score'] = score[mask]
+            df.loc[mask, 'position_score'] = score[mask]  # type: ignore
 
         return df
 

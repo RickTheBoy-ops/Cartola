@@ -48,7 +48,7 @@ class CartolaPredictor:
         """Prepara features para treinamento/predição"""
         feature_cols = [
             # Médias móveis simples
-            'pontos_media_3', 'pontos_media_5', 'pontos_media_8',
+            'pontos_media_3', 'pontos_media_5', 'pontos_media_9',
             'pontos_std_3', 'pontos_std_5',
             'pontos_max_5', 'pontos_min_5',
 

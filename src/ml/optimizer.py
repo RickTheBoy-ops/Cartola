@@ -71,7 +71,8 @@ class GeneticTeamOptimizer:
         mutation_rate: float = 0.20,
         elite_size: int = 20,
         max_mesmo_clube: int = 3,
-        penalidade_variancia: bool = True
+        penalidade_variancia: bool = True,
+        partidas_df: pd.DataFrame = None,
     ):
         self.patrimonio = patrimonio
         self.formacao = FORMACOES[formacao]
@@ -82,6 +83,17 @@ class GeneticTeamOptimizer:
         self.elite_size = elite_size
         self.max_mesmo_clube = max_mesmo_clube
         self.penalidade_variancia = penalidade_variancia
+
+        # ── Regra Anti-Confronto (regra #1 dos cartoleiros) ──────────
+        # Monta um set de pares {frozenset({clube_a, clube_b})} que se enfrentam
+        self.confrontos_set: set = set()
+        if partidas_df is not None and len(partidas_df) > 0:
+            for _, row in partidas_df.iterrows():
+                c_a = row.get('clube_casa_id') or row.get('clube_id_a')
+                c_b = row.get('clube_visitante_id') or row.get('clube_id_b')
+                if c_a and c_b and c_a != c_b:
+                    self.confrontos_set.add(frozenset({int(c_a), int(c_b)}))
+        logger.info(f"🚫 Anti-confronto: {len(self.confrontos_set)} confrontos mapeados")
 
         # Filtrar atletas válidos
         atletas_validos = filtrar_atletas_validos(atletas_df)
@@ -258,7 +270,58 @@ class GeneticTeamOptimizer:
         duplicatas = len(ids) - len(set(ids))
         penalidade_duplicata = duplicatas * 50
 
-        score = total_pontos + bonus - penalidade_clube - penalidade_variancia - penalidade_duplicata
+        # === Penalidade Anti-Confronto (regra #1 dos cartoleiros) ===
+        # Jamais escalar jogadores de times que se enfrentam no mesmo jogo.
+        penalidade_confronto = 0.0
+        if self.confrontos_set:
+            clubes_no_time = [(a.get('clube_id', 0), a.get('posicao_id', 0)) for a in team]
+            for i in range(len(clubes_no_time)):
+                for j in range(i + 1, len(clubes_no_time)):
+                    c_i, pos_i = clubes_no_time[i]
+                    c_j, pos_j = clubes_no_time[j]
+                    if c_i != c_j and frozenset({int(c_i), int(c_j)}) in self.confrontos_set:
+                        # Penalidade base por qualquer par adversário
+                        penalidade_confronto += 30.0
+                        # Penalidade extra se for MEI/ATA vs DEF adversário (dano direto)
+                        is_atk_i = pos_i in [4, 5]
+                        is_def_i = pos_i in [1, 2, 3]
+                        is_atk_j = pos_j in [4, 5]
+                        is_def_j = pos_j in [1, 2, 3]
+                        if (is_atk_i and is_def_j) or (is_atk_j and is_def_i):
+                            penalidade_confronto += 20.0  # ainda pior: atacante vs goleiro/zag adversário
+
+        # === Penalidade: Não-Titulares ===
+        # status_id = 7 é Provável no Cartola. Qualquer outro é risco enorme de zerar.
+        penalidade_status = 0.0
+        for a in team:
+            # Se a coluna não existir, assume = 7 para não quebrar testes antigos
+            if int(a.get('status_id', 7)) != 7:
+                penalidade_status += 100.0  # Penalidade massiva para forçar corte
+
+        # === Penalidade: Custo-Benefício Ruim & Regra de Ouro Miteira ===
+        penalidade_custo_beneficio = 0.0
+        penalidade_ausencia_elite = 0.0
+        
+        for a in team:
+            p = a.get('preco_num', a.get('preco', 0))
+            m = a.get('media_num', a.get('media', 0))
+            pos = a.get('posicao_id', 0)
+            pred = a.get('predicao', a.get('predicao_ajustada', 0))
+            
+            # 1. Custo-Benefício (Ex: Erick custa 6.0 e foca 3.5 -> fora!)
+            # Se custa mais de C$ 5.0, TEM que ter média superior a 4.0
+            if p > 5.0 and m < 4.0:
+                penalidade_custo_beneficio += 15.0
+                
+            # 2. Técnico sem "Tag Elite" (Ex: Seabra)
+            if pos == 6 and pred < 6.5:
+                penalidade_ausencia_elite += 20.0  # Técnico tem que ter alta projeção
+                
+            # 3. Atacante sem "Tag Elite" (Ex: Cristian Oliveira)
+            if pos == 5 and pred < 7.0:
+                penalidade_ausencia_elite += 15.0  # Atacante vive de gol, projeção baixa = risco enorme
+
+        score = total_pontos + bonus - penalidade_clube - penalidade_variancia - penalidade_duplicata - penalidade_confronto - penalidade_status - penalidade_custo_beneficio - penalidade_ausencia_elite
         self._fitness_cache[key] = score
         return score
 

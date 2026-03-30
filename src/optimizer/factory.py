@@ -58,12 +58,13 @@ class CartolaOptimizer:
                  df: pd.DataFrame, 
                  budget: float, 
                  formation: Optional[str] = None,
+                 partidas_df=None,
                  **kwargs) -> Optional[pd.DataFrame]:
         """
         Otimiza escalação usando estratégia selecionada.
         Garante que o resultado respeite formação e orçamento.
         """
-        lineup = self.strategy.optimize(df, budget, formation, **kwargs)
+        lineup = self.strategy.optimize(df, budget, formation, partidas_df=partidas_df, **kwargs)
 
         if lineup is None or lineup.empty:
             return lineup
