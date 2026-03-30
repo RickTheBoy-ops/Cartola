@@ -211,6 +211,13 @@ class GeneticTeamOptimizer:
         total_pontos = sum(atleta.get(self.fitness_col, 0) for atleta in team)
         total_preco = sum(atleta.get('preco', 0) for atleta in team)
 
+        # Hard constraint: time precisa ter exatamente o número de jogadores da formação
+        expected_players = self.formacao.total_jogadores()
+        if len(team) != expected_players:
+            score = 0.0
+            self._fitness_cache[key] = score
+            return score
+
         # === Bônus do Capitão: MEI (4) ou ATA (5) com maior score tem pontos dobrados ===
         # Inclui aqui para que o AG otimize o time COM o capitão, não SÓ na exibição
         capitao_bonus = max(
@@ -249,7 +256,8 @@ class GeneticTeamOptimizer:
         penalidade_clube = 0
         for clube_id, count in clubes.items():
             if count > self.max_mesmo_clube:
-                penalidade_clube += (count - self.max_mesmo_clube) * 5
+                # Torna praticamente inviável times que estouram o limite de jogadores por clube
+                penalidade_clube += (count - self.max_mesmo_clube) * 50
 
         # Regra defensiva: respeita max_mesmo_clube, com teto=2 para preservar SG coletiva
         max_def = min(2, self.max_mesmo_clube)
