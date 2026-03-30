@@ -18,6 +18,9 @@ class CartolaDataCollector:
     - Queries parametrizadas
     - Validação antes de inserir
     - Salva placar_a / placar_b para cruzamento H2H
+    - A partir de 2026-03: também persiste escalações otimizadas em
+      tabela própria (`escalacoes`) para avaliação posterior de
+      performance sem uso de IA.
     """
 
     def __init__(self, api_client, config_path: str = "config.yaml"):
@@ -171,11 +174,31 @@ class CartolaDataCollector:
             )
         """)
 
+        # Escalações otimizadas para avaliação posterior
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS escalacoes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ano INTEGER DEFAULT 2024,
+                rodada INTEGER,
+                estrategia TEXT,
+                formacao TEXT,
+                patrimonio REAL,
+                atleta_id INTEGER,
+                posicao_id INTEGER,
+                eh_capitao BOOLEAN DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (ano, rodada, estrategia, atleta_id)
+            )
+            """
+        )
+
         # Índices
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pontuacoes_atleta ON pontuacoes(atleta_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pontuacoes_rodada ON pontuacoes(rodada)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_partidas_rodada ON partidas(rodada)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_partidas_h2h ON partidas(clube_id_a, clube_id_b)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_escalacoes_rodada ON escalacoes(ano, rodada, estrategia)")
 
         conn.commit()
         conn.close()
@@ -397,3 +420,69 @@ class CartolaDataCollector:
             )
         conn.close()
         return df
+
+    # ------------------------------------------------------------------
+    # Escalações otimizadas (sem IA)
+    # ------------------------------------------------------------------
+    def salvar_escalacao(
+        self,
+        ano: int,
+        rodada: int,
+        estrategia: str,
+        formacao: str,
+        patrimonio: float,
+        lineup_df: pd.DataFrame,
+        capitao_id: Optional[int] = None,
+    ) -> None:
+        """Persiste a escalação otimizada em SQLite para avaliação posterior.
+
+        - Não usa IA: é apenas gravação de dados em tabela dedicada.
+        - Usa INSERT OR IGNORE para não sobrescrever escalações já
+          registradas para (ano, rodada, estrategia, atleta_id).
+        """
+        if lineup_df.empty:
+            logger.warning("Tentativa de salvar escalação vazia ignorada")
+            return
+
+        required_cols = {"atleta_id", "posicao_id"}
+        if not required_cols.issubset(lineup_df.columns):
+            logger.error(
+                "DataFrame de escalação sem colunas obrigatórias: %s",
+                lineup_df.columns,
+            )
+            return
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            for _, row in lineup_df.iterrows():
+                atleta_id = int(row["atleta_id"])
+                posicao_id = int(row["posicao_id"])
+                eh_capitao = 1 if capitao_id is not None and atleta_id == capitao_id else 0
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO escalacoes
+                        (ano, rodada, estrategia, formacao, patrimonio,
+                         atleta_id, posicao_id, eh_capitao)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ano,
+                        rodada,
+                        estrategia,
+                        formacao,
+                        patrimonio,
+                        atleta_id,
+                        posicao_id,
+                        eh_capitao,
+                    ),
+                )
+            conn.commit()
+            logger.info(
+                "💾 Escalação salva em 'escalacoes' – ano=%s rodada=%s estrategia=%s (%d atletas)",
+                ano,
+                rodada,
+                estrategia,
+                len(lineup_df),
+            )
+        finally:
+            conn.close()
